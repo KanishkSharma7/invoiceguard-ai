@@ -1,0 +1,161 @@
+generator client {
+ provider = "prisma-client-js"
+}
+datasource db {
+ provider = "postgresql"
+ url = env("DATABASE_URL")
+}
+enum Role {
+ OWNER
+ REVIEWER
+ VIEWER
+}
+enum ReviewStatus {
+ PENDING
+ APPROVED
+ NEEDS_REVIEW
+ REJECTED
+}
+enum AnalysisStatus {
+ PENDING
+ COMPLETED
+ FAILED
+}
+model User {
+ id String @id @default(uuid()) @db.Uuid
+ email String @unique
+ name String
+ passwordHash String
+ createdAt DateTime @default(now())
+ memberships Membership[]
+ sessions Session[]
+ decisions ReviewDecision[]
+ auditEvents AuditEvent[]
+}
+model Organization {
+ id String @id @default(uuid()) @db.Uuid
+ name String
+ createdAt DateTime @default(now())
+ memberships Membership[]
+ vendors Vendor[]
+ invoices Invoice[]
+ auditEvents AuditEvent[]
+}
+model Membership {
+ id String @id @default(uuid()) @db.Uuid
+ userId String @db.Uuid
+ organizationId String @db.Uuid
+ role Role
+ user User @relation(fields:[userId],references:[id])
+ organization Organization @relation(fields:[organizationId],references:[id])
+ sessions Session[]
+ @@unique([userId,organizationId])
+}
+model Session {
+ id String @id @default(uuid()) @db.Uuid
+ tokenHash String @unique
+ csrfToken String
+ userId String @db.Uuid
+ membershipId String @db.Uuid
+ expiresAt DateTime
+ createdAt DateTime @default(now())
+ user User @relation(fields:[userId],references:[id],onDelete:Cascade)
+ membership Membership @relation(fields:[membershipId],references:[id],onDelete:Cascade)
+ @@index([expiresAt])
+}
+model Vendor {
+ id String @id @default(uuid()) @db.Uuid
+ organizationId String @db.Uuid
+ name String
+ email String?
+ organization Organization @relation(fields:[organizationId],references:[id])
+ invoices Invoice[]
+ @@unique([id,organizationId])
+ @@unique([organizationId,name])
+}
+model Invoice {
+ id String @id @default(uuid()) @db.Uuid
+ organizationId String @db.Uuid
+ vendorId String @db.Uuid
+ invoiceNumber String
+ normalizedNumber String
+ issueDate DateTime @db.Date
+ dueDate DateTime @db.Date
+ currency String @db.VarChar(3)
+ subtotal Decimal @db.Decimal(12,2)
+ tax Decimal @db.Decimal(12,2)
+ total Decimal @db.Decimal(12,2)
+ revision Int @default(1)
+ reviewStatus ReviewStatus @default(PENDING)
+ duplicateWarning Boolean @default(false)
+ createdAt DateTime @default(now())
+ organization Organization @relation(fields:[organizationId],references:[id])
+ vendor Vendor @relation(fields:[vendorId,organizationId],references:[id,organizationId])
+ lineItems InvoiceLineItem[]
+ analyses AnalysisRun[]
+ decisions ReviewDecision[]
+ @@index([organizationId,vendorId,normalizedNumber])
+ @@index([organizationId,createdAt])
+}
+model InvoiceLineItem {
+ id String @id @default(uuid()) @db.Uuid
+ invoiceId String @db.Uuid
+ description String
+ quantity Decimal @db.Decimal(10,3)
+ unitPrice Decimal @db.Decimal(12,2)
+ amount Decimal @db.Decimal(12,2)
+ position Int
+ invoice Invoice @relation(fields:[invoiceId],references:[id],onDelete:Cascade)
+ @@unique([invoiceId,position])
+}
+model AnalysisRun {
+ id String @id @default(uuid()) @db.Uuid
+ invoiceId String @db.Uuid
+ invoiceRevision Int
+ status AnalysisStatus @default(PENDING)
+ riskScore Int?
+ confidence Decimal? @db.Decimal(5,4)
+ modelVersion String?
+ promptVersion String?
+ evidence Json?
+ createdAt DateTime @default(now())
+ invoice Invoice @relation(fields:[invoiceId],references:[id])
+ anomalies Anomaly[]
+ decisions ReviewDecision[]
+ @@unique([id,invoiceId])
+}
+model Anomaly {
+ id String @id @default(uuid()) @db.Uuid
+ analysisRunId String @db.Uuid
+ type String
+ severity String
+ explanation String
+ evidence Json
+ analysisRun AnalysisRun @relation(fields:[analysisRunId],references:[id])
+}
+model ReviewDecision {
+ id String @id @default(uuid()) @db.Uuid
+ invoiceId String @db.Uuid
+ analysisRunId String? @db.Uuid
+ actorId String @db.Uuid
+ invoiceRevision Int
+ decision ReviewStatus
+ reason String
+ createdAt DateTime @default(now())
+ invoice Invoice @relation(fields:[invoiceId],references:[id])
+ analysisRun AnalysisRun? @relation(fields:[analysisRunId,invoiceId],references:[id,invoiceId])
+ actor User @relation(fields:[actorId],references:[id])
+}
+model AuditEvent {
+ id String @id @default(uuid()) @db.Uuid
+ organizationId String @db.Uuid
+ actorId String? @db.Uuid
+ action String
+ entityType String
+ entityId String
+ metadata Json?
+ createdAt DateTime @default(now())
+ organization Organization @relation(fields:[organizationId],references:[id])
+ actor User? @relation(fields:[actorId],references:[id])
+ @@index([organizationId,createdAt])
+}

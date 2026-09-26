@@ -1,0 +1,14 @@
+{
+  "name": "@invoiceguard/contracts",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "zod": "^3.25.0",
+    "decimal.js": "^10.6.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

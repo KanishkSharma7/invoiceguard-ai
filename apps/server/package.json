@@ -1,0 +1,24 @@
+{
+  "name": "@invoiceguard/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=../../.env src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@invoiceguard/contracts": "*",
+    "express": "^5.1.0",
+    "helmet": "^8.1.0",
+    "express-rate-limit": "^8.0.0",
+    "argon2": "^0.44.0",
+    "cookie-parser": "^1.4.7"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/cookie-parser": "^1.4.9",
+    "vitest": "^5.0.2"
+  }
+}

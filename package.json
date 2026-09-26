@@ -1,0 +1,32 @@
+{
+  "name": "invoiceguard-ai",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -n api,web \"npm run dev -w @invoiceguard/server\" \"npm run dev -w @invoiceguard/web\"",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test -w @invoiceguard/server",
+    "build": "npm run build -w @invoiceguard/server && npm run build -w @invoiceguard/web",
+    "db:generate": "prisma generate --schema packages/database/prisma/schema.prisma",
+    "db:migrate": "prisma migrate deploy --schema packages/database/prisma/schema.prisma",
+    "db:seed": "tsx packages/database/prisma/seed.ts",
+    "test:smoke": "tsx --env-file=.env apps/server/tests/smoke.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "@prisma/client": "6.12.0",
+    "dotenv": "^16.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "concurrently": "^9.2.0",
+    "prettier": "^3.9.9",
+    "prisma": "6.12.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
