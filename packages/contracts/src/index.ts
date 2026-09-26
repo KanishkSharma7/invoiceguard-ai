@@ -133,3 +133,90 @@ export type ApiError = {
     details?: unknown;
   };
 };
+
+export const riskLevelSchema = z.enum(["LOW", "MEDIUM", "HIGH"]);
+export const findingSchema = z
+  .object({
+    type: z.string().trim().min(1).max(80),
+    severity: riskLevelSchema,
+    explanation: z.string().trim().min(1).max(1200),
+    evidence: z
+      .array(
+        z
+          .object({
+            invoiceId: z.string().uuid(),
+            detail: z.string().trim().min(1).max(1000),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(12),
+    whyItMatters: z.string().trim().min(1).max(1000),
+  })
+  .strict();
+export const aiOutputSchema = z
+  .object({
+    riskLevel: riskLevelSchema,
+    confidence: z.number().int().min(0).max(100),
+    executiveSummary: z.string().trim().min(1).max(2000),
+    contextualAnomalies: z.array(findingSchema).max(20),
+    recommendation: z.enum(["APPROVE", "NEEDS_REVIEW", "REJECT"]),
+    recommendedReviewerActions: z
+      .array(z.string().trim().min(1).max(500))
+      .min(1)
+      .max(10),
+    insufficientHistory: z.boolean(),
+  })
+  .strict();
+export const decisionSchema = z
+  .object({
+    decision: z.enum(["APPROVED", "NEEDS_REVIEW", "REJECTED"]),
+    reason: z.string().trim().min(1, "Reviewer notes are required").max(2000),
+    invoiceRevision: z.number().int().positive(),
+    analysisRunId: z.string().uuid().nullable(),
+    expectedLastDecisionId: z.string().uuid().nullable(),
+  })
+  .strict();
+export type Finding = z.infer<typeof findingSchema>;
+export type AiOutput = z.infer<typeof aiOutputSchema>;
+export type AnalysisDto = {
+  id: string;
+  invoiceId: string;
+  invoiceRevision: number;
+  status: "PENDING" | "COMPLETED" | "FAILED";
+  riskLevel: AiOutput["riskLevel"] | null;
+  confidence: number | null;
+  summary: string | null;
+  recommendation: AiOutput["recommendation"] | null;
+  reviewerActions: string[];
+  insufficientHistory: boolean;
+  modelVersion: string | null;
+  promptVersion: string | null;
+  createdAt: string;
+  completedAt: string | null;
+  failureCode: string | null;
+  deterministicFindings: Finding[];
+  aiFindings: Finding[];
+  limitations: string[];
+};
+export type DecisionDto = {
+  id: string;
+  decision: "APPROVED" | "NEEDS_REVIEW" | "REJECTED";
+  reason: string;
+  createdAt: string;
+  actor: { id: string; name: string };
+  analysisRunId: string | null;
+  invoiceRevision: number;
+};
+export type InvoiceDetailDto = InvoiceDto & {
+  revision: number;
+  subtotal: string;
+  tax: string;
+  lineItems: {
+    id: string;
+    description: string;
+    quantity: string;
+    unitPrice: string;
+    amount: string;
+  }[];
+};

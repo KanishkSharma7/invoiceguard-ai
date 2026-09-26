@@ -1,3 +1,5 @@
+import { api, ApiFailure, setCsrfToken } from "./api";
+import { InvoiceDetail } from "./features/invoices/InvoiceDetail";
 import React, { useEffect, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -18,36 +20,6 @@ import {
 } from "@invoiceguard/contracts";
 import { Decimal } from "decimal.js";
 import "./styles.css";
-let csrfToken = "";
-class ApiFailure extends Error {
-  constructor(
-    message: string,
-    public status: number,
-  ) {
-    super(message);
-  }
-}
-async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api/v1${path}`, {
-    ...options,
-    credentials: "same-origin",
-    headers: {
-      "Content-Type": "application/json",
-      "X-CSRF-Token": csrfToken,
-      ...options.headers,
-    },
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    if (response.status === 401 && path != "/auth/login" && path != "/auth/me")
-      window.dispatchEvent(new Event("session-expired"));
-    throw new ApiFailure(
-      body?.error?.message ?? "Could not connect to the server.",
-      response.status,
-    );
-  }
-  return response.status === 204 ? (undefined as T) : response.json();
-}
 function ErrorMessage({ message }: { message: string }) {
   return message ? (
     <div className="error" role="alert">
@@ -63,7 +35,7 @@ function App() {
     setError("");
     try {
       const me = await api<CurrentUser>("/auth/me");
-      csrfToken = me.csrfToken;
+      setCsrfToken(me.csrfToken);
       setUser(me);
     } catch (e) {
       if (!(e instanceof ApiFailure && e.status === 401))
@@ -75,7 +47,7 @@ function App() {
   useEffect(() => {
     void refresh();
     const expired = () => {
-      csrfToken = "";
+      setCsrfToken("");
       setUser(null);
     };
     window.addEventListener("session-expired", expired);
@@ -111,7 +83,7 @@ function App() {
             onClick={async () => {
               try {
                 await api("/auth/logout", { method: "POST" });
-                csrfToken = "";
+                setCsrfToken("");
                 setUser(null);
               } catch (e) {
                 setError((e as Error).message);
@@ -144,6 +116,7 @@ function App() {
               )
             }
           />
+          <Route path="/invoices/:id" element={<InvoiceDetail user={user} />} />
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </main>
@@ -301,7 +274,7 @@ function Dashboard() {
       <div className="notice">
         <strong>Built for human oversight</strong>
         <p>
-          AI analysis and review actions are planned for a later milestone. No
+          Analyze invoices for decision support, then record your own review. No
           payments are initiated from this workspace.
         </p>
       </div>
@@ -372,7 +345,12 @@ function Invoices({ canCreate }: { canCreate: boolean }) {
                 {data?.items.map((invoice) => (
                   <tr key={invoice.id}>
                     <td>
-                      <strong>{invoice.invoiceNumber}</strong>
+                      <NavLink
+                        className="invoice-link"
+                        to={`/invoices/${invoice.id}`}
+                      >
+                        {invoice.invoiceNumber} →
+                      </NavLink>
                       <small>{invoice.vendor.name}</small>
                       {invoice.duplicateWarning && (
                         <span className="duplicate">Possible duplicate</span>

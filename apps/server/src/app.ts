@@ -1,3 +1,5 @@
+import { AppError } from "./lib/errors.js";
+import { reviewRouter } from "./reviews/routes.js";
 import express, {
   type Request,
   type Response,
@@ -30,15 +32,6 @@ const config = z
   })
   .parse(process.env);
 export { config };
-class AppError extends Error {
-  constructor(
-    public status: number,
-    public code: string,
-    message: string,
-  ) {
-    super(message);
-  }
-}
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 const cookieOptions = {
@@ -300,6 +293,7 @@ app.post("/api/v1/invoices", async (req, res) => {
   });
   res.status(201).json(dto(invoice));
 });
+app.use("/api/v1", reviewRouter(prisma));
 app.use((_req, _res, next) =>
   next(new AppError(404, "NOT_FOUND", "Route not found.")),
 );
@@ -339,10 +333,8 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
         errorType: error instanceof Error ? error.name : "Unknown",
       }),
     );
-  res
-    .status(status)
-    .json({
-      error: { code, message, requestId: res.locals.requestId, details },
-    });
+  res.status(status).json({
+    error: { code, message, requestId: res.locals.requestId, details },
+  });
 });
 export default app;

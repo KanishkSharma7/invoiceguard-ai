@@ -521,3 +521,183 @@ fieldset {
     max-width: none;
   }
 }
+
+.invoice-link {
+  color: #24634d;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.human-status {
+  background: #e4eee6;
+  padding: 16px;
+  border-radius: 9px;
+  min-width: 160px;
+}
+.human-status small,
+.advisory small {
+  font-size: 10px;
+  letter-spacing: 1px;
+  margin-bottom: 7px;
+}
+.human-status strong,
+.advisory strong {
+  display: block;
+  font-size: 19px;
+}
+.review-metadata,
+.analysis-metrics {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin: 20px 0;
+}
+.invoice-totals {
+  text-align: right;
+  margin: 22px 0 0;
+}
+.ai-review .notice {
+  margin-bottom: 20px;
+}
+.run-selector {
+  margin: 20px 0;
+  max-width: 520px;
+}
+.risk {
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.risk-low {
+  background: #e2f0e7;
+  color: #275b3b;
+}
+.risk-medium {
+  background: #fff0cb;
+  color: #806016;
+}
+.risk-high {
+  background: #fbe5df;
+  color: #963d2d;
+}
+.history-warning {
+  background: #fff6df;
+  border: 1px solid #eadbac;
+  border-radius: 8px;
+  padding: 16px;
+  margin: 18px 0;
+}
+.history-warning p {
+  margin: 8px 0 0;
+  line-height: 1.6;
+}
+.finding-group {
+  border-left: 4px solid;
+  padding: 8px 0 8px 20px;
+  margin: 28px 0;
+}
+.deterministic {
+  border-color: #46775b;
+}
+.contextual {
+  border-color: #8779a8;
+}
+.finding {
+  padding: 16px;
+  border: 1px solid #e1e7e1;
+  border-radius: 8px;
+  margin: 14px 0;
+  background: #fcfdfb;
+}
+.finding-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+.finding p {
+  line-height: 1.6;
+  margin: 12px 0;
+}
+details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+li {
+  margin: 10px 0;
+  line-height: 1.6;
+}
+li a {
+  color: #24634d;
+  text-decoration: underline;
+}
+.advisory {
+  background: #f0edf7;
+  border-radius: 8px;
+  padding: 18px;
+  margin-top: 18px;
+}
+.human-review {
+  border: 2px solid #64856d;
+}
+.decision-options {
+  display: flex;
+  gap: 20px;
+  margin: 20px 0;
+  flex-wrap: wrap;
+}
+.decision-options label {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+}
+.decision-options input {
+  width: auto;
+  margin: 0;
+}
+textarea {
+  display: block;
+  resize: vertical;
+  width: 100%;
+  margin-top: 10px;
+  border: 1px solid #cbd6cf;
+  border-radius: 7px;
+  padding: 12px;
+  font: inherit;
+}
+.decision-entry {
+  padding: 20px 0;
+  border-top: 1px solid #e1e7e1;
+}
+.decision-entry p {
+  white-space: pre-wrap;
+  margin: 12px 0;
+}
+.decision-entry small {
+  color: #718476;
+  margin: 7px 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 700px) {
+  .ai-review .table-title {
+    align-items: flex-start;
+    gap: 15px;
+    flex-direction: column;
+  }
+  .finding-group {
+    padding-left: 12px;
+  }
+  .finding-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .invoice-totals {
+    text-align: left;
+    line-height: 1.8;
+  }
+  .human-status {
+    width: 100%;
+  }
+}

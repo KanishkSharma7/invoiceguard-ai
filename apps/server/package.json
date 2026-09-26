@@ -10,15 +10,16 @@
   },
   "dependencies": {
     "@invoiceguard/contracts": "*",
-    "express": "^5.1.0",
-    "helmet": "^8.1.0",
-    "express-rate-limit": "^8.0.0",
     "argon2": "^0.44.0",
-    "cookie-parser": "^1.4.7"
+    "cookie-parser": "^1.4.7",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.0.0",
+    "helmet": "^8.1.0",
+    "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
-    "@types/express": "^5.0.0",
     "@types/cookie-parser": "^1.4.9",
+    "@types/express": "^5.0.0",
     "vitest": "^5.0.2"
   }
 }

@@ -15,7 +15,8 @@
     "db:seed": "tsx packages/database/prisma/seed.ts",
     "test:smoke": "tsx --env-file=.env apps/server/tests/smoke.ts",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "verify:live": "tsx --env-file=.env apps/server/scripts/verify-live.ts"
   },
   "dependencies": {
     "@prisma/client": "6.12.0",

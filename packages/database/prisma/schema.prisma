@@ -113,6 +113,13 @@ model AnalysisRun {
  invoiceId String @db.Uuid
  invoiceRevision Int
  status AnalysisStatus @default(PENDING)
+ riskLevel String?
+ summary String?
+ recommendation String?
+ reviewerActions Json?
+ insufficientHistory Boolean @default(true)
+ completedAt DateTime?
+ failureCode String?
  riskScore Int?
  confidence Decimal? @db.Decimal(5,4)
  modelVersion String?
@@ -127,6 +134,7 @@ model AnalysisRun {
 model Anomaly {
  id String @id @default(uuid()) @db.Uuid
  analysisRunId String @db.Uuid
+ source String @default("DETERMINISTIC")
  type String
  severity String
  explanation String
