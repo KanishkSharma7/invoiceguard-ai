@@ -14,6 +14,7 @@ import { Prisma, PrismaClient } from "@prisma/client";
 import { z, ZodError } from "zod";
 import {
   invoiceSchema,
+  invoiceListQuerySchema,
   loginSchema,
   calculateSubtotal,
   normalizeInvoiceNumber,
@@ -68,7 +69,7 @@ const asyncAuth = async (req: Request, res: Response, next: NextFunction) => {
 };
 const app = express();
 app.disable("x-powered-by");
-app.use((req, res, next) => {
+app.use((_req, res, next) => {
   res.locals.requestId = randomUUID();
   res.setHeader("X-Request-Id", res.locals.requestId);
   next();
@@ -76,6 +77,10 @@ app.use((req, res, next) => {
 app.use(helmet());
 app.use(express.json({ limit: "128kb" }));
 app.use(cookieParser());
+app.use("/api", (_req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  next();
+});
 app.use("/api", (req, _res, next) => {
   if (
     !["GET", "HEAD", "OPTIONS"].includes(req.method) &&
@@ -218,11 +223,19 @@ const dto = (
   total: invoice.total.toFixed(2),
 });
 app.get("/api/v1/invoices", async (req, res) => {
-  const { page } = z
-    .object({ page: z.coerce.number().int().min(1).max(100000).default(1) })
-    .parse(req.query);
-  const where = {
+  const { page, q, status, vendorId } = invoiceListQuerySchema.parse(req.query);
+  const where: Prisma.InvoiceWhereInput = {
     organizationId: res.locals.session.membership.organizationId,
+    ...(status ? { reviewStatus: status } : {}),
+    ...(vendorId ? { vendorId } : {}),
+    ...(q
+      ? {
+          OR: [
+            { invoiceNumber: { contains: q, mode: "insensitive" } },
+            { vendor: { name: { contains: q, mode: "insensitive" } } },
+          ],
+        }
+      : {}),
   };
   const [items, total] = await prisma.$transaction([
     prisma.invoice.findMany({

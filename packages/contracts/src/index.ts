@@ -4,12 +4,19 @@ export const money = z
   .string()
   .regex(
     /^(0|[1-9]\d{0,9})(\.\d{1,2})?$/,
-    "Use a positive amount with at most 2 decimal places",
+    "Use a nonnegative amount with at most 2 decimal places",
   );
 const quantity = z
   .string()
   .regex(/^(0|[1-9]\d{0,6})(\.\d{1,3})?$/)
-  .refine((v) => new Decimal(v).gt(0), "Quantity must be greater than zero");
+  .pipe(
+    z
+      .string()
+      .refine(
+        (v) => new Decimal(v).gt(0),
+        "Quantity must be greater than zero",
+      ),
+  );
 const date = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -45,37 +52,37 @@ export function validateInvoiceTotal(
 ): boolean {
   return new Decimal(calculateSubtotal(items)).plus(tax).eq(total);
 }
-export const invoiceSchema = z
-  .object({
-    vendorId: z.string().uuid(),
-    invoiceNumber: z.string().trim().min(1).max(100),
-    issueDate: date,
-    dueDate: date,
-    currency: z.enum(["USD", "EUR", "GBP", "CAD", "AUD"]),
-    tax: money,
-    total: money,
-    lineItems: z.array(lineItemSchema).min(1).max(100),
-  })
-  .superRefine((v, ctx) => {
-    if (v.dueDate < v.issueDate)
-      ctx.addIssue({
-        code: "custom",
-        path: ["dueDate"],
-        message: "Due date must be on or after issue date",
-      });
-    if (!validateInvoiceTotal(v.lineItems, v.tax, v.total))
-      ctx.addIssue({
-        code: "custom",
-        path: ["total"],
-        message: "Total must equal rounded line amounts plus tax",
-      });
-    if (new Decimal(calculateSubtotal(v.lineItems)).gt("9999999999.99"))
-      ctx.addIssue({
-        code: "custom",
-        path: ["lineItems"],
-        message: "Subtotal exceeds supported limit",
-      });
-  });
+const invoiceFieldsSchema = z.object({
+  vendorId: z.string().uuid(),
+  invoiceNumber: z.string().trim().min(1).max(100),
+  issueDate: date,
+  dueDate: date,
+  currency: z.enum(["USD", "EUR", "GBP", "CAD", "AUD"]),
+  tax: money,
+  total: money,
+  lineItems: z.array(lineItemSchema).min(1).max(100),
+});
+export const invoiceSchema = invoiceFieldsSchema.superRefine((v, ctx) => {
+  if (!invoiceFieldsSchema.safeParse(v).success) return;
+  if (v.dueDate < v.issueDate)
+    ctx.addIssue({
+      code: "custom",
+      path: ["dueDate"],
+      message: "Due date must be on or after issue date",
+    });
+  if (!validateInvoiceTotal(v.lineItems, v.tax, v.total))
+    ctx.addIssue({
+      code: "custom",
+      path: ["total"],
+      message: "Total must equal rounded line amounts plus tax",
+    });
+  if (new Decimal(calculateSubtotal(v.lineItems)).gt("9999999999.99"))
+    ctx.addIssue({
+      code: "custom",
+      path: ["lineItems"],
+      message: "Subtotal exceeds supported limit",
+    });
+});
 export const loginSchema = z.object({
   email: z
     .string()
@@ -220,3 +227,12 @@ export type InvoiceDetailDto = InvoiceDto & {
     amount: string;
   }[];
 };
+
+export const invoiceListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).max(100000).default(1),
+  q: z.string().trim().max(100).default(""),
+  status: z
+    .enum(["PENDING", "APPROVED", "NEEDS_REVIEW", "REJECTED"])
+    .optional(),
+  vendorId: z.string().uuid().optional(),
+});

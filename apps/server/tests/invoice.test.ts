@@ -74,3 +74,40 @@ describe("duplicate detection", () => {
       isDuplicateInvoice({ vendorId: "a", invoiceNumber: "INV-100" }, []),
     ).toBe(false));
 });
+
+describe("malformed monetary input regression", () => {
+  const valid = {
+    vendorId: "10000000-0000-4000-8000-000000000001",
+    invoiceNumber: "QA",
+    issueDate: "2026-09-26",
+    dueDate: "2026-10-26",
+    currency: "USD",
+    tax: "0",
+    total: "10",
+    lineItems: [{ description: "Paper", quantity: "1", unitPrice: "10" }],
+  };
+  it.each(["abc", "", "NaN", "Infinity", "1e3", "-1"])(
+    "returns validation errors, never throws, for invalid quantity %s",
+    (quantity) => {
+      expect(
+        invoiceSchema.safeParse({
+          ...valid,
+          lineItems: [{ ...valid.lineItems[0], quantity }],
+        }).success,
+      ).toBe(false);
+    },
+  );
+  it.each(["tax", "total", "unitPrice"])(
+    "safely rejects malformed %s",
+    (field) => {
+      const input =
+        field === "unitPrice"
+          ? {
+              ...valid,
+              lineItems: [{ ...valid.lineItems[0], unitPrice: "bad" }],
+            }
+          : { ...valid, [field]: "bad" };
+      expect(invoiceSchema.safeParse(input).success).toBe(false);
+    },
+  );
+});

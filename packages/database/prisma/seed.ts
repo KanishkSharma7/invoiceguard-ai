@@ -3,6 +3,8 @@ import { PrismaClient } from "@prisma/client";
 import argon2 from "argon2";
 const db = new PrismaClient();
 async function main() {
+  if (process.env.NODE_ENV !== "development")
+    throw new Error("Demo seeding is allowed only with NODE_ENV=development.");
   const ownerPassword = process.env.SEED_OWNER_PASSWORD,
     reviewerPassword = process.env.SEED_REVIEWER_PASSWORD;
   if (

@@ -368,6 +368,175 @@ describe("authenticated AI and human review workflow", () => {
       await db.reviewDecision.count({ where: { invoiceId: sparse } }),
     ).toBe(1);
   });
+  it("filters and searches invoices before pagination without crossing organizations", async () => {
+    const response = await request("/invoices?q=nOrMaL&status=NEEDS_REVIEW");
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.total).toBe(1);
+    expect(data.items[0].id).toBe(normal);
+    const scoped = await (await request("/invoices?q=PRIVATE")).json();
+    expect(scoped.total).toBe(0);
+    const vendorId = (
+      await db.invoice.findUniqueOrThrow({ where: { id: normal } })
+    ).vendorId;
+    const byVendor = await (
+      await request(`/invoices?vendorId=${vendorId}`)
+    ).json();
+    expect(
+      byVendor.items.every(
+        (i: { vendorId: string }) => i.vendorId === vendorId,
+      ),
+    ).toBe(true);
+    expect((await request("/invoices?status=INVALID")).status).toBe(400);
+    expect((await request("/invoices?page=0")).status).toBe(400);
+    expect((await (await request("/invoices?page=999")).json()).items).toEqual(
+      [],
+    );
+  });
+  it("returns 400 rather than crashing on malformed monetary input", async () => {
+    const invoice = await db.invoice.findUniqueOrThrow({
+      where: { id: normal },
+    });
+    const result = await request("/invoices", "POST", {
+      vendorId: invoice.vendorId,
+      invoiceNumber: "BAD",
+      issueDate: "2026-09-26",
+      dueDate: "2026-10-26",
+      currency: "USD",
+      tax: "0",
+      total: "10",
+      lineItems: [{ description: "Paper", quantity: "abc", unitPrice: "10" }],
+    });
+    expect(result.status).toBe(400);
+    const body = await result.json();
+    expect(body.error.code).toBe("VALIDATION_FAILED");
+    expect(JSON.stringify(body)).not.toContain("DecimalError");
+    expect(body.error.stack).toBeUndefined();
+  });
+  it("allows manual APPROVE, NEEDS_REVIEW, and REJECT after Gemini failure and records each audit event", async () => {
+    mocked.mockRejectedValueOnce(
+      new AppError(503, "GEMINI_NOT_CONFIGURED", "AI is unavailable."),
+    );
+    expect(
+      (await request(`/invoices/${unusual}/analyses`, "POST")).status,
+    ).toBe(503);
+    let last: string | null = null;
+    for (const decision of ["APPROVED", "NEEDS_REVIEW", "REJECTED"]) {
+      const result = await request(`/invoices/${unusual}/decisions`, "POST", {
+        decision,
+        reason: `QA manual ${decision} with Gemini unavailable.`,
+        invoiceRevision: 1,
+        analysisRunId: null,
+        expectedLastDecisionId: last,
+      });
+      expect(result.status).toBe(201);
+      const saved = await result.json();
+      last = saved.id;
+      expect(saved.actor.id).toBe(userId);
+      expect(
+        (await db.invoice.findUniqueOrThrow({ where: { id: unusual } }))
+          .reviewStatus,
+      ).toBe(decision);
+      expect(
+        await db.auditEvent.count({
+          where: {
+            organizationId: org,
+            actorId: userId,
+            entityId: saved.id,
+            action: "HUMAN_REVIEW_RECORDED",
+          },
+        }),
+      ).toBe(1);
+    }
+    expect(
+      await (await request(`/invoices/${unusual}/decisions`)).json(),
+    ).toHaveLength(3);
+    expect(
+      (await request(`/invoices/${unusual}/decisions/${last}`, "DELETE"))
+        .status,
+    ).toBe(404);
+  });
+  it("dashboard metrics match organization-scoped database counts", async () => {
+    const summary = await (await request("/dashboard/summary")).json();
+    expect(summary).toEqual({
+      invoiceCount: await db.invoice.count({ where: { organizationId: org } }),
+      pendingCount: await db.invoice.count({
+        where: { organizationId: org, reviewStatus: "PENDING" },
+      }),
+      vendorCount: await db.vendor.count({ where: { organizationId: org } }),
+    });
+  });
+  it("rejects stale invoice revisions and foreign analysis references", async () => {
+    const foreignRun = await db.analysisRun.findFirstOrThrow({
+      where: { invoiceId: foreign },
+    });
+    expect(
+      (
+        await request(`/invoices/${duplicate}/decisions`, "POST", {
+          decision: "APPROVED",
+          reason: "QA",
+          invoiceRevision: 2,
+          analysisRunId: null,
+          expectedLastDecisionId: null,
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await request(`/invoices/${duplicate}/decisions`, "POST", {
+          decision: "APPROVED",
+          reason: "QA",
+          invoiceRevision: 1,
+          analysisRunId: foreignRun.id,
+          expectedLastDecisionId: null,
+        })
+      ).status,
+    ).toBe(409);
+  });
+  it("protects decision writes across organizations", async () => {
+    expect(
+      (
+        await request(`/invoices/${foreign}/decisions`, "POST", {
+          decision: "APPROVED",
+          reason: "QA",
+          invoiceRevision: 1,
+          analysisRunId: null,
+          expectedLastDecisionId: null,
+        })
+      ).status,
+    ).toBe(404);
+  });
+  it("does not leak unexpected internal exception details", async () => {
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+    const find = vi
+      .spyOn(db.invoice, "findFirst")
+      .mockRejectedValueOnce(new Error("private-credential-internal-stack"));
+    try {
+      const result = await request(`/invoices/${normal}`);
+      expect(result.status).toBe(500);
+      const body = await result.json();
+      expect(JSON.stringify(body)).not.toContain("private-credential");
+      expect(body.error.stack).toBeUndefined();
+      expect(body.error.requestId).toBeTruthy();
+    } finally {
+      find.mockRestore();
+      diagnostic.mockRestore();
+    }
+  });
+  it("rejects untrusted origins and prevents authenticated caching", async () => {
+    const denied = await fetch(base + `/invoices/${normal}/analyses`, {
+      method: "POST",
+      headers: {
+        Origin: "https://untrusted.example",
+        Cookie: cookie,
+        "X-CSRF-Token": csrf,
+      },
+    });
+    expect(denied.status).toBe(403);
+    expect((await request("/auth/me")).headers.get("cache-control")).toBe(
+      "no-store",
+    );
+  });
   it("enforces VIEWER restrictions and CSRF", async () => {
     const old = csrf;
     csrf = "bad";
@@ -386,5 +555,14 @@ describe("authenticated AI and human review workflow", () => {
       (await request(`/invoices/${normal}/decisions`, "POST", {})).status,
     ).toBe(403);
     expect((await request(`/analyses/${runId}`)).status).toBe(200);
+  });
+  it("logout invalidates the session and appends an audit event", async () => {
+    expect((await request("/auth/logout", "POST")).status).toBe(204);
+    expect((await request("/auth/me")).status).toBe(401);
+    expect(
+      await db.auditEvent.count({
+        where: { organizationId: org, actorId: userId, action: "LOGOUT" },
+      }),
+    ).toBe(1);
   });
 });

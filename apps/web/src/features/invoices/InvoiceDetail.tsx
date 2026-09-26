@@ -41,7 +41,12 @@ function Findings({ items, empty }: { items: Finding[]; empty: string }) {
               {f.evidence.map((e, i) => (
                 <li key={i}>
                   {e.detail}{" "}
-                  <Link to={`/invoices/${e.invoiceId}`}>View invoice</Link>
+                  <Link
+                    to={`/invoices/${e.invoiceId}`}
+                    aria-label={`View evidence invoice ${e.invoiceId}`}
+                  >
+                    View invoice
+                  </Link>
                 </li>
               ))}
             </ul>
@@ -163,14 +168,24 @@ function InvoiceReview({ user }: { user: CurrentUser }) {
     }
     setSaving(true);
     try {
-      await api(`/invoices/${id}/decisions`, {
+      const recorded = await api<DecisionDto>(`/invoices/${id}/decisions`, {
         method: "POST",
         body: JSON.stringify(parsed.data),
       });
-      await load();
-      setSuccess("Your human decision was recorded. No payment was initiated.");
+      setDecisions((old) => [recorded, ...old]);
+      setInvoice((old) =>
+        old ? { ...old, reviewStatus: recorded.decision } : old,
+      );
       setChoice("");
       setNotes("");
+      try {
+        await load();
+      } catch {
+        setError(
+          "Your decision was saved, but the latest data could not be refreshed. Reload before reviewing again.",
+        );
+      }
+      setSuccess("Your human decision was recorded. No payment was initiated.");
     } catch (e) {
       setError((e as Error).message);
       try {
@@ -182,7 +197,12 @@ function InvoiceReview({ user }: { user: CurrentUser }) {
       setSaving(false);
     }
   }
-  if (loading) return <p className="card">Loading invoice review…</p>;
+  if (loading)
+    return (
+      <p className="card" role="status">
+        Loading invoice review…
+      </p>
+    );
   if (!invoice)
     return (
       <div className="error" role="alert">
@@ -202,7 +222,7 @@ function InvoiceReview({ user }: { user: CurrentUser }) {
             {invoice.vendor.name} · {invoice.currency} {invoice.total}
           </p>
         </div>
-        <div className="human-status">
+        <div className="human-status" role="status">
           <small>FINAL HUMAN STATUS</small>
           <strong>{decisionLabel(invoice.reviewStatus)}</strong>
         </div>
@@ -224,14 +244,22 @@ function InvoiceReview({ user }: { user: CurrentUser }) {
           <span>Due: {invoice.dueDate.slice(0, 10)}</span>
           <span>Revision {invoice.revision}</span>
         </div>
-        <div className="table-scroll">
+        <div
+          className="table-scroll"
+          role="region"
+          aria-label="Invoice line items, horizontally scrollable"
+          tabIndex={0}
+        >
           <table>
+            <caption className="sr-only">
+              Invoice line items and monetary amounts
+            </caption>
             <thead>
               <tr>
-                <th>Description</th>
-                <th>Quantity</th>
-                <th>Unit price</th>
-                <th>Amount</th>
+                <th scope="col">Description</th>
+                <th scope="col">Quantity</th>
+                <th scope="col">Unit price</th>
+                <th scope="col">Amount</th>
               </tr>
             </thead>
             <tbody>
@@ -410,6 +438,7 @@ function InvoiceReview({ user }: { user: CurrentUser }) {
         {canReview ? (
           <form onSubmit={review}>
             <fieldset disabled={saving || analyzing}>
+              <legend>Your human decision (required)</legend>
               <div className="decision-options">
                 {[
                   ["APPROVED", "Approve"],

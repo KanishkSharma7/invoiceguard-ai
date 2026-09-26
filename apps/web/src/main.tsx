@@ -9,6 +9,7 @@ import {
   Route,
   Navigate,
   useNavigate,
+  useLocation,
 } from "react-router-dom";
 import {
   calculateSubtotal,
@@ -26,6 +27,13 @@ function ErrorMessage({ message }: { message: string }) {
       {message}
     </div>
   ) : null;
+}
+function RouteFocus() {
+  const { pathname } = useLocation();
+  useEffect(() => {
+    document.getElementById("main-content")?.focus();
+  }, [pathname]);
+  return null;
 }
 function App() {
   const [user, setUser] = useState<CurrentUser | null>(null),
@@ -57,6 +65,10 @@ function App() {
   if (!user) return <Login onLogin={refresh} initialError={error} />;
   return (
     <div className="layout">
+      <a className="skip-link" href="#main-content">
+        Skip to main content
+      </a>
+      <RouteFocus />
       <aside>
         <a className="brand" href="/">
           ◈ InvoiceGuard <span>AI</span>
@@ -64,7 +76,7 @@ function App() {
         <div className="workspace">
           WORKSPACE<strong>{user.organization.name}</strong>
         </div>
-        <nav>
+        <nav aria-label="Main navigation">
           <NavLink to="/" end>
             Overview
           </NavLink>
@@ -94,7 +106,7 @@ function App() {
           </button>
         </div>
       </aside>
-      <main>
+      <main id="main-content" tabIndex={-1}>
         <div className="topbar">
           <span>Finance workspace</span>
           <span className="pill">Human decisions, always</span>
@@ -151,7 +163,7 @@ function Login({
     }
   }
   return (
-    <div className="login">
+    <main className="login" aria-label="Sign in">
       <section className="intro">
         <div className="brand">
           ◈ InvoiceGuard <span>AI</span>
@@ -204,7 +216,7 @@ function Login({
           </small>
         </form>
       </section>
-    </div>
+    </main>
   );
 }
 function Heading({
@@ -243,7 +255,7 @@ function Dashboard() {
       />
       <ErrorMessage message={error} />
       {!data && !error ? (
-        <p>Loading overview…</p>
+        <p role="status">Loading overview…</p>
       ) : (
         data && (
           <div className="stats">
@@ -283,18 +295,33 @@ function Dashboard() {
 }
 function Invoices({ canCreate }: { canCreate: boolean }) {
   const [data, setData] = useState<{
-      items: InvoiceDto[];
-      total: number;
-      pageSize: number;
-    }>(),
-    [page, setPage] = useState(1),
-    [error, setError] = useState("");
+    items: InvoiceDto[];
+    total: number;
+    pageSize: number;
+  }>();
+  const [page, setPage] = useState(1),
+    [error, setError] = useState(""),
+    [retry, setRetry] = useState(0);
+  const [vendors, setVendors] = useState<VendorDto[]>([]);
+  const [draft, setDraft] = useState({ q: "", status: "", vendorId: "" });
+  const [filters, setFilters] = useState(draft);
+  useEffect(() => {
+    api<VendorDto[]>("/vendors")
+      .then(setVendors)
+      .catch(() => {
+        /* The list remains usable without the optional vendor selector. */
+      });
+  }, []);
   useEffect(() => {
     let active = true;
     setData(undefined);
     setError("");
+    const query = new URLSearchParams({ page: String(page) });
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) query.set(key, value);
+    });
     api<{ items: InvoiceDto[]; total: number; pageSize: number }>(
-      `/invoices?page=${page}`,
+      `/invoices?${query}`,
     )
       .then((v) => {
         if (active) setData(v);
@@ -305,7 +332,7 @@ function Invoices({ canCreate }: { canCreate: boolean }) {
     return () => {
       active = false;
     };
-  }, [page]);
+  }, [page, filters, retry]);
   return (
     <>
       <Heading
@@ -319,65 +346,149 @@ function Invoices({ canCreate }: { canCreate: boolean }) {
           ) : undefined
         }
       />
+      <form
+        className="card filters"
+        aria-label="Filter invoices"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setPage(1);
+          setFilters({ ...draft });
+        }}
+      >
+        <label>
+          Search invoice or vendor
+          <input
+            type="search"
+            value={draft.q}
+            maxLength={100}
+            onChange={(e) => setDraft({ ...draft, q: e.target.value })}
+          />
+        </label>
+        <label>
+          Human status
+          <select
+            value={draft.status}
+            onChange={(e) => setDraft({ ...draft, status: e.target.value })}
+          >
+            <option value="">All statuses</option>
+            {["PENDING", "APPROVED", "NEEDS_REVIEW", "REJECTED"].map(
+              (status) => (
+                <option key={status} value={status}>
+                  {status.replaceAll("_", " ").toLowerCase()}
+                </option>
+              ),
+            )}
+          </select>
+        </label>
+        <label>
+          Vendor
+          <select
+            value={draft.vendorId}
+            onChange={(e) => setDraft({ ...draft, vendorId: e.target.value })}
+          >
+            <option value="">All vendors</option>
+            {vendors.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button>Apply filters</button>
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => {
+            const empty = { q: "", status: "", vendorId: "" };
+            setDraft(empty);
+            setFilters(empty);
+            setPage(1);
+          }}
+        >
+          Clear filters
+        </button>
+      </form>
       <ErrorMessage message={error} />
+      {error && (
+        <button className="secondary" onClick={() => setRetry((r) => r + 1)}>
+          Retry invoice list
+        </button>
+      )}
       <section className="card table-card">
         <div className="table-title">
-          <h2>All invoices</h2>
-          <span className="muted">{data?.total ?? "…"} records</span>
+          <h2>Invoices</h2>
+          <span className="muted" role="status">
+            {data
+              ? `${data.total} matching record${data.total === 1 ? "" : "s"}`
+              : error
+                ? "Unable to load records"
+                : "Loading invoices…"}
+          </span>
         </div>
-        {!data && !error ? (
-          <p>Loading invoices…</p>
-        ) : data?.items.length === 0 ? (
-          <p>No invoices yet. Create your first invoice to get started.</p>
+        {data?.items.length === 0 ? (
+          <p>
+            No invoices match these filters. Clear filters or create an invoice
+            to continue.
+          </p>
         ) : (
-          <div className="table-scroll">
-            <table>
-              <thead>
-                <tr>
-                  <th>Invoice / vendor</th>
-                  <th>Issued</th>
-                  <th>Due</th>
-                  <th>Amount</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data?.items.map((invoice) => (
-                  <tr key={invoice.id}>
-                    <td>
-                      <NavLink
-                        className="invoice-link"
-                        to={`/invoices/${invoice.id}`}
-                      >
-                        {invoice.invoiceNumber} →
-                      </NavLink>
-                      <small>{invoice.vendor.name}</small>
-                      {invoice.duplicateWarning && (
-                        <span className="duplicate">Possible duplicate</span>
-                      )}
-                    </td>
-                    <td>{invoice.issueDate.slice(0, 10)}</td>
-                    <td>{invoice.dueDate.slice(0, 10)}</td>
-                    <td className="amount">
-                      {invoice.currency} {invoice.total}
-                    </td>
-                    <td>
-                      <span className="status">
-                        {invoice.reviewStatus
-                          .replaceAll("_", " ")
-                          .toLowerCase()}
-                      </span>
-                    </td>
+          data && (
+            <div
+              className="table-scroll"
+              role="region"
+              aria-label="Invoice results, horizontally scrollable"
+              tabIndex={0}
+            >
+              <table>
+                <caption className="sr-only">
+                  Invoices matching the applied search and filters
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Invoice / vendor</th>
+                    <th scope="col">Issued</th>
+                    <th scope="col">Due</th>
+                    <th scope="col">Amount</th>
+                    <th scope="col">Human status</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {data.items.map((invoice) => (
+                    <tr key={invoice.id}>
+                      <td>
+                        <NavLink
+                          className="invoice-link"
+                          to={`/invoices/${invoice.id}`}
+                        >
+                          {invoice.invoiceNumber} →
+                        </NavLink>
+                        <small>{invoice.vendor.name}</small>
+                        {invoice.duplicateWarning && (
+                          <span className="duplicate">Possible duplicate</span>
+                        )}
+                      </td>
+                      <td>{invoice.issueDate.slice(0, 10)}</td>
+                      <td>{invoice.dueDate.slice(0, 10)}</td>
+                      <td className="amount">
+                        {invoice.currency} {invoice.total}
+                      </td>
+                      <td>
+                        <span className="status">
+                          {invoice.reviewStatus
+                            .replaceAll("_", " ")
+                            .toLowerCase()}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
         )}
         <div className="pagination">
           <button
             className="secondary"
-            disabled={page === 1}
+            disabled={!data || page === 1}
             onClick={() => setPage((p) => p - 1)}
           >
             Previous
@@ -403,7 +514,7 @@ function CreateInvoice() {
   const [fields, setFields] = useState({
     vendorId: "",
     invoiceNumber: "",
-    issueDate: new Date().toISOString().slice(0, 10),
+    issueDate: new Date().toLocaleDateString("en-CA"),
     dueDate: "",
     currency: "USD",
     tax: "0.00",
@@ -465,6 +576,7 @@ function CreateInvoice() {
       <form onSubmit={submit}>
         <ErrorMessage message={error} />
         <fieldset disabled={busy}>
+          <legend className="sr-only">Create invoice</legend>
           <section className="card">
             <h2>Invoice details</h2>
             <div className="form-grid">
@@ -537,7 +649,8 @@ function CreateInvoice() {
                           ? "Quantity"
                           : "Description"}
                       <input
-                        aria-label={`${key} ${index + 1}`}
+                        id={`line-${index}-${key}`}
+                        aria-label={`${key === "unitPrice" ? "Unit price" : key === "quantity" ? "Quantity" : "Description"}, line ${index + 1}`}
                         inputMode={key === "description" ? "text" : "decimal"}
                         value={line[key]}
                         onChange={(e) =>
@@ -558,9 +671,16 @@ function CreateInvoice() {
                   className="secondary remove"
                   aria-label={`Remove line ${index + 1}`}
                   disabled={lines.length === 1}
-                  onClick={() =>
-                    setLines((old) => old.filter((_, i) => i !== index))
-                  }
+                  onClick={() => {
+                    setLines((old) => old.filter((_, i) => i !== index));
+                    requestAnimationFrame(() =>
+                      document
+                        .getElementById(
+                          `line-${Math.max(0, index - 1)}-description`,
+                        )
+                        ?.focus(),
+                    );
+                  }}
                 >
                   ×
                 </button>
@@ -570,12 +690,17 @@ function CreateInvoice() {
               type="button"
               className="secondary"
               disabled={lines.length >= 100}
-              onClick={() =>
+              onClick={() => {
                 setLines((old) => [
                   ...old,
                   { description: "", quantity: "1", unitPrice: "0.00" },
-                ])
-              }
+                ]);
+                requestAnimationFrame(() =>
+                  document
+                    .getElementById(`line-${lines.length}-description`)
+                    ?.focus(),
+                );
+              }}
             >
               + Add line item
             </button>
