@@ -9,25 +9,33 @@
     "dev": "concurrently -k -n api,web \"npm run dev -w @invoiceguard/server\" \"npm run dev -w @invoiceguard/web\"",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test -w @invoiceguard/server",
-    "build": "npm run build -w @invoiceguard/server && npm run build -w @invoiceguard/web",
+    "build": "npm run build -w @invoiceguard/contracts && npm run build -w @invoiceguard/database && npm run build -w @invoiceguard/server && npm run build -w @invoiceguard/web",
     "db:generate": "prisma generate --schema packages/database/prisma/schema.prisma",
-    "db:migrate": "prisma migrate deploy --schema packages/database/prisma/schema.prisma",
+    "db:migrate": "node scripts/migrate.mjs",
     "db:seed": "tsx packages/database/prisma/seed.ts",
     "test:smoke": "tsx --env-file=.env apps/server/tests/smoke.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "verify:live": "tsx --env-file=.env apps/server/scripts/verify-live.ts"
+    "verify:live": "tsx --env-file=.env apps/server/scripts/verify-live.ts",
+    "start": "node apps/server/dist/apps/server/src/server.js",
+    "predev": "npm run build -w @invoiceguard/contracts && npm run build -w @invoiceguard/database",
+    "pretypecheck": "npm run build -w @invoiceguard/contracts && npm run build -w @invoiceguard/database",
+    "pretest": "npm run build -w @invoiceguard/contracts && npm run build -w @invoiceguard/database",
+    "verify:production": "node --env-file=.env scripts/verify-production.mjs"
   },
   "dependencies": {
-    "@prisma/client": "6.12.0",
+    "@prisma/client": "6.19.3",
     "dotenv": "^16.6.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "concurrently": "^9.2.0",
     "prettier": "^3.9.9",
-    "prisma": "6.12.0",
+    "prisma": "6.19.3",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
+  },
+  "overrides": {
+    "deepmerge-ts": "8.0.0"
   }
 }

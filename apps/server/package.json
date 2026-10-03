@@ -17,7 +17,8 @@
     "helmet": "^8.1.0",
     "zod-to-json-schema": "^3.25.2",
     "zod": "^3.25.0",
-    "decimal.js": "^10.6.0"
+    "decimal.js": "^10.6.0",
+    "@invoiceguard/database": "*"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.9",

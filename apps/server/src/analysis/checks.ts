@@ -5,7 +5,7 @@ import { AppError } from "../lib/errors.js";
 const decimal = z
   .string()
   .regex(/^-?\d+(\.\d+)?$/)
-  .refine((v) => new Decimal(v).isFinite());
+  .pipe(z.string().refine((v) => new Decimal(v).isFinite()));
 const date = z.string().datetime();
 export const snapshotSchema = z.object({
   id: z.string().uuid(),

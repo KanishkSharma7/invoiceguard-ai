@@ -10,7 +10,9 @@ import rateLimit from "express-rate-limit";
 import cookieParser from "cookie-parser";
 import argon2 from "argon2";
 import { randomBytes, createHash, randomUUID } from "node:crypto";
-import { Prisma, PrismaClient } from "@prisma/client";
+import path from "node:path";
+import { Prisma } from "@prisma/client";
+import { createDatabaseClient } from "@invoiceguard/database";
 import { z, ZodError } from "zod";
 import {
   invoiceSchema,
@@ -21,18 +23,27 @@ import {
   type CurrentUser,
 } from "@invoiceguard/contracts";
 
-export const prisma = new PrismaClient();
+export const prisma = createDatabaseClient();
 const config = z
   .object({
-    DATABASE_URL: z.string().url(),
     PORT: z.coerce.number().int().min(1).max(65535).default(3001),
     APP_ORIGIN: z.string().url(),
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
     NODE_ENV: z
       .enum(["development", "production", "test"])
       .default("development"),
   })
   .parse(process.env);
 export { config };
+if (new URL(config.APP_ORIGIN).origin !== config.APP_ORIGIN)
+  throw new Error(
+    "APP_ORIGIN must be an exact origin without a path or trailing slash.",
+  );
+if (
+  config.NODE_ENV === "production" &&
+  new URL(config.APP_ORIGIN).protocol !== "https:"
+)
+  throw new Error("Production APP_ORIGIN must use HTTPS.");
 const hash = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 const cookieOptions = {
@@ -68,6 +79,7 @@ const asyncAuth = async (req: Request, res: Response, next: NextFunction) => {
   next();
 };
 const app = express();
+app.set("trust proxy", config.TRUST_PROXY_HOPS);
 app.disable("x-powered-by");
 app.use((_req, res, next) => {
   res.locals.requestId = randomUUID();
@@ -75,12 +87,12 @@ app.use((_req, res, next) => {
   next();
 });
 app.use(helmet());
-app.use(express.json({ limit: "128kb" }));
-app.use(cookieParser());
 app.use("/api", (_req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   next();
 });
+app.use(express.json({ limit: "128kb" }));
+app.use(cookieParser());
 app.use("/api", (req, _res, next) => {
   if (
     !["GET", "HEAD", "OPTIONS"].includes(req.method) &&
@@ -97,7 +109,11 @@ app.get("/api/health/live", (_req, res) => {
   res.json({ status: "ok" });
 });
 app.get("/api/health/ready", async (_req, res) => {
-  await prisma.$queryRaw`SELECT 1`;
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } catch {
+    throw new AppError(503, "NOT_READY", "Database is unavailable.");
+  }
   res.json({ status: "ok" });
 });
 const authLimiter = rateLimit({
@@ -307,6 +323,14 @@ app.post("/api/v1/invoices", async (req, res) => {
   res.status(201).json(dto(invoice));
 });
 app.use("/api/v1", reviewRouter(prisma));
+if (config.NODE_ENV === "production") {
+  const webRoot = path.resolve("apps/web/dist");
+  app.use(express.static(webRoot));
+  app.get("/{*path}", (req, res, next) => {
+    if (req.path === "/api" || req.path.startsWith("/api/")) return next();
+    res.sendFile(path.join(webRoot, "index.html"));
+  });
+}
 app.use((_req, _res, next) =>
   next(new AppError(404, "NOT_FOUND", "Route not found.")),
 );

@@ -3,8 +3,22 @@
   "private": true,
   "version": "0.0.0",
   "dependencies": {
-    "@prisma/client": "6.12.0",
+    "@aws-sdk/client-sts": "^3.1144.0",
+    "@aws-sdk/rds-signer": "^3.1144.0",
+    "@prisma/adapter-pg": "6.19.3",
+    "@prisma/client": "6.19.3",
     "argon2": "^0.44.0",
-    "dotenv": "^16.6.1"
+    "dotenv": "^16.6.1",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1"
+  },
+  "type": "module",
+  "exports": "./dist/client.js",
+  "types": "./dist/client.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit"
   }
 }

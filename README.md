@@ -1,5 +1,8 @@
 # InvoiceGuard AI
 
+For the production container, environment, health checks, and migration release
+gate, see [ECS deployment readiness](docs/ECS_DEPLOYMENT_READINESS.md).
+
 InvoiceGuard AI helps accounts-payable specialists, finance managers, bookkeepers, and small-business owners review invoices more consistently. It combines deterministic financial checks with Gemini explanations while keeping every final decision with an authenticated human reviewer.
 
 **AI provides decision support only. It cannot approve or reject an invoice, write a human review decision, or initiate a payment.**
@@ -167,7 +170,7 @@ npm run build
 npm audit
 ```
 
-`npm test` runs **69 tests**: 19 invoice validation/decimal/duplicate unit tests, 30 deterministic-rule/AI-schema/provider-adapter tests, and 20 authenticated HTTP/database integration tests. Automated tests mock Gemini and spend no API quota. Integration tests use temporary organizations/users/invoices in the configured PostgreSQL database and remove only their own fixtures. Use a local development database.
+`npm test` runs **282 tests**: the original 69 tests (19 invoice, 30 analysis, 20 HTTP/database integration), plus 154 formal boundary/security unit tests and 59 formal HTTP/database integration tests. See [automated testing results](docs/AUTOMATED_TEST_RESULTS.md) and the [formal checklist](docs/TESTING_CHECKLIST.md) for coverage and remaining manual work. Automated tests mock Gemini and spend no API quota. Integration tests use temporary organizations/users/invoices in the configured PostgreSQL database and remove only their own fixtures. Use a local development database.
 
 Type checking includes application code, shared contracts, tests, verification scripts, and the seed. Unused locals/parameters are checked. The production build compiles the API and generates the Vite bundle; deployment packaging is intentionally not implemented.
 
