@@ -12,9 +12,66 @@ export const REPOSITORY =
 const TASK_ROLE = "arn:aws:iam::172147428032:role/InvoiceGuardTaskRole";
 const PREFIX = "arn:aws:ecs:us-east-1:172147428032:";
 const PROGRESS = new Set(["PENDING", "IN_PROGRESS"]);
+const ERROR_CODES = new Set([
+  "AMBIGUOUS_SERVICE_CONFIGURATION",
+  "ARCHITECTURE_MISMATCH",
+  "AWS_API_FAILED",
+  "AWS_RESPONSE_INVALID",
+  "CURRENT_CONFIGURATION_NOT_FOUND",
+  "DEPLOYMENT_FAILED_OR_ROLLED_BACK",
+  "DEPLOYMENT_IDENTITY_MISMATCH",
+  "DEPLOYMENT_NOT_FOUND",
+  "DEPLOYMENT_SUPERSEDED",
+  "DEPLOYMENT_SUPERSEDED_OR_ROLLED_BACK",
+  "DEPLOYMENT_TIMEOUT",
+  "ECR_LOOKUP_FAILED",
+  "ECR_LOOKUP_INCOMPLETE",
+  "ECR_TAG_DIGEST_MISMATCH",
+  "EXISTING_DEPLOYMENT_NOT_SUCCESSFUL",
+  "INVALID_COMMAND",
+  "INVALID_COMMIT_SHA",
+  "INVALID_ECR_IMAGE",
+  "INVALID_EXECUTION_ROLE",
+  "INVALID_GITHUB_CONTEXT",
+  "INVALID_IMAGE_DIGEST",
+  "INVALID_OIDC_ROLE",
+  "INVALID_REGION",
+  "INVALID_REVISION_IDENTIFIER",
+  "INVALID_TASK_DEFINITION",
+  "INVALID_TASK_ROLE",
+  "INVALID_TIMEOUT",
+  "MISSING_GITHUB_OUTPUT",
+  "NO_NEW_REVISION",
+  "PORT_OR_HEALTH_CONFIGURATION_MISMATCH",
+  "PRIMARY_CONTAINER_MISMATCH",
+  "ROLE_CONFIGURATION_MISMATCH",
+  "SERVICE_CONFIGURATION_MISMATCH",
+  "SERVICE_IDENTITY_OR_STATUS_MISMATCH",
+  "TASK_CONFIGURATION_MISMATCH",
+  "TASK_DEFINITION_UNAVAILABLE",
+  "UPDATE_CONFIGURATION_MISMATCH",
+  "UPDATE_SERVICE_MISMATCH",
+]);
+// A private provenance map prevents an external error message/code from being
+// mistaken for one of our internal codes. Never inspect raw error properties.
+const internalCodes = new WeakMap();
+function internalError(code) {
+  const error = new Error(code);
+  internalCodes.set(error, code);
+  return error;
+}
+
+export function sanitizedErrorCode(error) {
+  const code = internalCodes.get(error);
+  return ERROR_CODES.has(code) ? code : "UNEXPECTED_ERROR";
+}
+
+export function reportFailure(error, log = console.error) {
+  log(sanitizedErrorCode(error));
+}
 
 function requireCondition(condition, code) {
-  if (!condition) throw new Error(code);
+  if (!condition) throw internalError(code);
 }
 
 export function settings(env = process.env) {
@@ -108,11 +165,12 @@ export async function awsCli(
       });
       child.once("close", (code) => {
         clearTimeout(timeout);
-        if (failed || code !== 0) return reject(new Error("AWS_API_FAILED"));
+        if (failed || code !== 0)
+          return reject(internalError("AWS_API_FAILED"));
         try {
           resolveResult(JSON.parse(output));
         } catch {
-          reject(new Error("AWS_RESPONSE_INVALID"));
+          reject(internalError("AWS_RESPONSE_INVALID"));
         }
       });
     });
@@ -282,19 +340,28 @@ export function taskSnapshot(task) {
   return normalize(copy);
 }
 
-export async function preflight(expected, aws = awsCli) {
+export async function preflight(
+  expected,
+  aws = awsCli,
+  { log = console.log } = {},
+) {
+  log("preflight:service");
   const service = await describeService(aws);
+  log("preflight:deployment");
   const deployment = await describeDeployment(aws, service.currentDeployment);
   requireCondition(
     deployment.status === "SUCCESSFUL",
     "EXISTING_DEPLOYMENT_NOT_SUCCESSFUL",
   );
+  log("preflight:configuration");
   const config = getConfiguration(
     service,
     deployment.targetServiceRevision.arn,
   );
   requireCondition(config, "CURRENT_CONFIGURATION_NOT_FOUND");
+  log("preflight:task-definition");
   const task = await taskDefinition(aws, config.taskDefinitionArn);
+  log("preflight:configuration-validation");
   verifyKnownConfiguration(config, task, expected);
   return { service, config, task };
 }
@@ -315,7 +382,7 @@ export async function deploy(
   );
   const image = `${REPOSITORY}@${imageDigest}`;
   const deadline = now() + expected.timeoutMs;
-  const baseline = await preflight(expected, aws);
+  const baseline = await preflight(expected, aws, { log });
   requireCondition(now() < deadline, "DEPLOYMENT_TIMEOUT");
   const container = {
     ...structuredClone(baseline.config.primaryContainer),
@@ -411,7 +478,7 @@ export async function deploy(
     }
     await sleep(15000);
   }
-  throw new Error("DEPLOYMENT_TIMEOUT");
+  throw internalError("DEPLOYMENT_TIMEOUT");
 }
 
 export async function lookupImage(sha, aws = awsCli) {
@@ -498,12 +565,10 @@ if (
       );
     } else if (mode === "deploy") {
       await deploy(process.env.IMAGE_DIGEST, expected);
-    } else throw new Error("INVALID_COMMAND");
-  } catch {
+    } else throw internalError("INVALID_COMMAND");
+  } catch (error) {
     // Do not emit raw errors: AWS errors can contain request configuration.
-    console.error(
-      "Production deployment failed: API access, deployment status, timeout or configuration validation failed. Inspect the ECS console securely; no configuration values are logged.",
-    );
+    reportFailure(error);
     process.exitCode = 1;
   }
 }

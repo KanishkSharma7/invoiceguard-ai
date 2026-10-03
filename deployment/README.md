@@ -105,7 +105,8 @@ mode 0600). The file is removed in finally after each call, never stored in the
 repository or uploaded as an artifact. This avoids Node stdin/socket portability
 issues. It never prints environment values, secret references, database
 configuration, AWS credentials, raw errors or statusReason. Logs contain fixed
-messages and allowlisted status enums. Runner termination removes the ephemeral
+messages, allowlisted status enums, preflight stage markers, and internal error
+codes. Runner termination removes the ephemeral
 runner; forced process termination may leave an input file until runner cleanup.
 
 Preflight checks the service identity/account/cluster, ACTIVE service, SUCCESSFUL
@@ -138,6 +139,15 @@ manual rollback. Existing ECS rollback policy remains authoritative. Inspect the
 exact revision before retrying: an update may finish after a client timeout.
 GitHub concurrency does not lock out manual service edits; detected concurrent
 edits cause a mismatch/superseded failure.
+
+Preflight emits `preflight:service`, `preflight:deployment`,
+`preflight:configuration`, `preflight:task-definition`, and
+`preflight:configuration-validation` immediately before each stage. On failure
+the final error line is only an allowlisted internal code (for example
+`ROLE_CONFIGURATION_MISMATCH` or `AWS_API_FAILED`). Errors without private
+internal provenance map to `UNEXPECTED_ERROR`; their message/code/stack is never
+read or printed. These diagnostics do not change deployment validation or exit
+behavior.
 
 ## Verify before the first live run
 

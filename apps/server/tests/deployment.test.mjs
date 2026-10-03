@@ -10,6 +10,9 @@ import {
   deploy,
   lookupImage,
   awsCli,
+  preflight,
+  sanitizedErrorCode,
+  reportFailure,
 } from "../../../deployment/deploy.mjs";
 
 const prefix = "arn:aws:ecs:us-east-1:172147428032:";
@@ -375,11 +378,158 @@ describe("private CLI request transport", () => {
         spawnProcess,
       });
       if (exitCode === 0) expect(await result).toEqual({ ok: true });
-      else await expect(result).rejects.toThrow("AWS_API_FAILED");
+      else {
+        const error = await result.catch((error) => error);
+        expect(sanitizedErrorCode(error)).toBe("AWS_API_FAILED");
+        const logs = [];
+        reportFailure(error, (line) => logs.push(line));
+        expect(logs).toEqual(["AWS_API_FAILED"]);
+      }
       expect(existsSync(requestPath)).toBe(false);
       expect(existsSync(dirname(requestPath))).toBe(false);
     },
   );
+});
+
+describe("sanitized preflight diagnostics", () => {
+  const stages = [
+    "service",
+    "deployment",
+    "configuration",
+    "task-definition",
+    "configuration-validation",
+  ];
+  it.each([
+    [
+      "SERVICE_IDENTITY_OR_STATUS_MISMATCH",
+      0,
+      "describe-express-gateway-service",
+      (r) => {
+        r.service.serviceName = "sensitive-other-service";
+      },
+    ],
+    [
+      "EXISTING_DEPLOYMENT_NOT_SUCCESSFUL",
+      1,
+      "describe-service-deployments",
+      (r) => {
+        r.serviceDeployments[0].status = "STOPPED";
+      },
+    ],
+    [
+      "CURRENT_CONFIGURATION_NOT_FOUND",
+      2,
+      "describe-express-gateway-service",
+      (r) => {
+        r.service.activeConfigurations = [];
+      },
+    ],
+    [
+      "TASK_DEFINITION_UNAVAILABLE",
+      3,
+      "describe-task-definition",
+      (r) => {
+        r.taskDefinition.status = "INACTIVE";
+      },
+    ],
+    [
+      "ROLE_CONFIGURATION_MISMATCH",
+      4,
+      "describe-task-definition",
+      (r) => {
+        r.taskDefinition.taskRoleArn = "sensitive-incorrect-role";
+      },
+    ],
+    [
+      "PORT_OR_HEALTH_CONFIGURATION_MISMATCH",
+      4,
+      "describe-express-gateway-service",
+      (r) => {
+        r.service.activeConfigurations[0].healthCheckPath = "/wrong";
+      },
+    ],
+    [
+      "ARCHITECTURE_MISMATCH",
+      4,
+      "describe-task-definition",
+      (r) => {
+        r.taskDefinition.runtimePlatform.cpuArchitecture = "ARM64";
+      },
+    ],
+    [
+      "PRIMARY_CONTAINER_MISMATCH",
+      4,
+      "describe-task-definition",
+      (r) => {
+        r.taskDefinition.containerDefinitions[0].image =
+          "sensitive-wrong-image";
+      },
+    ],
+  ])(
+    "reports only stage markers and %s",
+    async (code, lastStage, operation, modify) => {
+      const f = fixture();
+      const logs = [];
+      const aws = async (...args) => {
+        const result = await f.aws(...args);
+        if (args[1] === operation) modify(result);
+        return result;
+      };
+      try {
+        await preflight(settings(env), aws, { log: (line) => logs.push(line) });
+        throw new Error("Expected preflight to fail");
+      } catch (error) {
+        reportFailure(error, (line) => logs.push(line));
+      }
+      expect(logs).toEqual([
+        ...stages.slice(0, lastStage + 1).map((stage) => `preflight:${stage}`),
+        code,
+      ]);
+      expect(JSON.stringify(logs)).not.toMatch(
+        /sensitive|arn:|DB_HOST|GEMINI|password|credential/i,
+      );
+    },
+  );
+  it("prints all markers on success without logging configuration", async () => {
+    const f = fixture();
+    const logs = [];
+    const result = await preflight(settings(env), f.aws, {
+      log: (line) => logs.push(line),
+    });
+    expect(result.config).toEqual(f.config);
+    expect(logs).toEqual(stages.map((stage) => `preflight:${stage}`));
+  });
+  it("maps raw external failures to UNEXPECTED_ERROR even if they mimic internal codes", async () => {
+    const logs = [];
+    const aws = vi.fn().mockRejectedValue(new Error("AWS_API_FAILED"));
+    await preflight(settings(env), aws, {
+      log: (line) => logs.push(line),
+    }).catch((error) => reportFailure(error, (line) => logs.push(line)));
+    expect(logs).toEqual(["preflight:service", "UNEXPECTED_ERROR"]);
+  });
+  it("never reads raw error getters, messages, codes or credentials", () => {
+    const error = Object.defineProperties(
+      {},
+      Object.fromEntries(
+        ["message", "code", "stack", "credentials"].map((key) => [
+          key,
+          {
+            get() {
+              throw new Error("sensitive-value");
+            },
+          },
+        ]),
+      ),
+    );
+    const logs = [];
+    reportFailure(error, (line) => logs.push(line));
+    expect(logs).toEqual(["UNEXPECTED_ERROR"]);
+    expect(sanitizedErrorCode(new Error("ROLE_CONFIGURATION_MISMATCH"))).toBe(
+      "UNEXPECTED_ERROR",
+    );
+    for (const value of [undefined, null, "sensitive-value", 123])
+      expect(sanitizedErrorCode(value)).toBe("UNEXPECTED_ERROR");
+  });
 });
 
 describe("immutable commit image reuse", () => {
