@@ -308,7 +308,8 @@ describe("production deployment guardrails", () => {
   it("rejects mismatched update responses immediately", async () => {
     const f = fixture({
       updateChange: (result) => {
-        result.service.targetConfiguration.primaryContainer.environment = [];
+        result.service.targetConfiguration.primaryContainer.image =
+          "incorrect-image";
       },
     });
     await expect(deploy(digest, settings(env), f.options)).rejects.toThrow(
@@ -998,10 +999,10 @@ describe("safe Express update structural diagnostics", () => {
     ],
   ])("reports only paths and still rejects %s", async (path, mutate) => {
     const f = fixture({
-      updateChange: ({ service }) => mutate(service.targetConfiguration),
+      changeConfig: mutate,
     });
     await expect(deploy(digest, settings(env), f.options)).rejects.toThrow(
-      "UPDATE_CONFIGURATION_MISMATCH",
+      "SERVICE_CONFIGURATION_MISMATCH",
     );
     const diffs = f.logs.filter((line) =>
       line.startsWith("configuration-diff:"),
@@ -1046,5 +1047,63 @@ describe("safe Express update structural diagnostics", () => {
         configurationSnapshot(other),
       ),
     ).toEqual(["networkConfiguration.subnets[1]"]);
+  });
+});
+
+describe("materialized Express configuration validation", () => {
+  it.each([undefined, "/"])(
+    "accepts an incomplete immediate health path %s",
+    async (path) => {
+      const f = fixture({
+        updateChange: ({ service }) => {
+          const target = service.targetConfiguration;
+          if (path === undefined) delete target.healthCheckPath;
+          else target.healthCheckPath = path;
+        },
+      });
+      await deploy(digest, settings(env), f.options);
+      expect(
+        f.logs.some((line) => line.startsWith("configuration-diff:")),
+      ).toBe(false);
+      expect(
+        f.aws.mock.calls.some(
+          (call) =>
+            call[1] === "describe-task-definition" &&
+            call[2].taskDefinition === taskArn(2),
+        ),
+      ).toBe(true);
+    },
+  );
+  it.each([undefined, "/wrong"])(
+    "rejects a materialized health path %s despite a successful deployment",
+    async (path) => {
+      const f = fixture({
+        statuses: ["SUCCESSFUL"],
+        updateChange: ({ service }) => {
+          delete service.targetConfiguration.healthCheckPath;
+        },
+        changeConfig: (config) => {
+          if (path === undefined) delete config.healthCheckPath;
+          else config.healthCheckPath = path;
+        },
+      });
+      await expect(deploy(digest, settings(env), f.options)).rejects.toThrow(
+        "SERVICE_CONFIGURATION_MISMATCH",
+      );
+      expect(
+        f.logs.filter((line) => line.startsWith("configuration-diff:")),
+      ).toEqual(["configuration-diff: healthCheckPath"]);
+    },
+  );
+  it("accepts an immediate target containing only revision and image", async () => {
+    const f = fixture({
+      updateChange: ({ service }) => {
+        service.targetConfiguration = {
+          serviceRevisionArn: revision("new"),
+          primaryContainer: { image: `${REPOSITORY}@${digest}` },
+        };
+      },
+    });
+    await deploy(digest, settings(env), f.options);
   });
 });

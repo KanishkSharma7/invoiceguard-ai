@@ -210,7 +210,7 @@ Sources: [Express update API](https://docs.aws.amazon.com/AmazonECS/latest/APIRe
 
 An image-only update that fails configuration comparison emits only differing
 schema paths, for example `configuration-diff: primaryContainer.environment[0].value`,
-followed by `UPDATE_CONFIGURATION_MISMATCH`. Array indices refer to the canonical
+followed by `SERVICE_CONFIGURATION_MISMATCH` for the materialized active revision. Array indices refer to the canonical
 snapshot (environment/secrets sorted by name). No field values, environment names,
 images, role ARNs, secret references, or AWS responses are printed. Unknown field
 names are replaced with `[unknown-field]` so response keys cannot leak data.
@@ -220,5 +220,8 @@ The comparison already excludes generated `serviceRevisionArn`,
 separately. Unordered lists are canonicalized. Missing versus present functional
 fields remain a mismatch, even if a value appears to be a default. Do not add an
 exception without evidence that the specific field is server-managed and does
-not change functional or security configuration. The live mismatch's field is
-not known until its sanitized path diagnostic is available.
+not change functional or security configuration. The immediate update target can omit or normalize `healthCheckPath`; it is not
+used for full comparison. Only service identity, the new scoped revision ARN, and
+the requested immutable image are checked immediately. Polling then validates the
+exact new active revision with the full strict configuration and task-definition
+comparisons. An omitted or changed health path in that active revision still fails.

@@ -557,23 +557,13 @@ export async function deploy(
     "NO_NEW_REVISION",
   );
   const target = response.service.targetConfiguration;
-  const expectedSnapshot = configurationSnapshot(baseline.config);
-  const actualSnapshot = configurationSnapshot(target);
+  // The immediate target is not materialized: Express may omit/default fields
+  // such as healthCheckPath. Validate identity/revision/image here, then compare
+  // the complete active configuration for this exact revision below.
   const imageMatches = target.primaryContainer?.image === image;
-  const configurationMatches = isDeepStrictEqual(
-    expectedSnapshot,
-    actualSnapshot,
-  );
-  if (!imageMatches || !configurationMatches) {
-    const paths = configurationDiffPaths(expectedSnapshot, actualSnapshot);
-    if (!imageMatches) paths.push("primaryContainer.image");
-    for (const path of [...new Set(paths)].sort())
-      log(`configuration-diff: ${path}`);
-  }
-  requireCondition(
-    imageMatches && configurationMatches,
-    "UPDATE_CONFIGURATION_MISMATCH",
-  );
+  if (!imageMatches) log("configuration-diff: primaryContainer.image");
+  requireCondition(imageMatches, "UPDATE_CONFIGURATION_MISMATCH");
+  const expectedSnapshot = configurationSnapshot(baseline.config);
   log("Express update accepted; waiting for the exact new revision.");
   let pinnedDeployment;
   let taskChecked;
@@ -596,12 +586,20 @@ export async function deploy(
     );
     const config = getConfiguration(service, revision);
     if (config) {
+      const actualSnapshot = configurationSnapshot(config);
+      const imageMatches = config.primaryContainer?.image === image;
+      const configurationMatches = isDeepStrictEqual(
+        expectedSnapshot,
+        actualSnapshot,
+      );
+      if (!imageMatches || !configurationMatches) {
+        const paths = configurationDiffPaths(expectedSnapshot, actualSnapshot);
+        if (!imageMatches) paths.push("primaryContainer.image");
+        for (const path of [...new Set(paths)].sort())
+          log(`configuration-diff: ${path}`);
+      }
       requireCondition(
-        config.primaryContainer?.image === image &&
-          isDeepStrictEqual(
-            configurationSnapshot(baseline.config),
-            configurationSnapshot(config),
-          ),
+        imageMatches && configurationMatches,
         "SERVICE_CONFIGURATION_MISMATCH",
       );
       if (taskChecked !== config.taskDefinitionArn) {
