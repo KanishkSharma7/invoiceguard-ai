@@ -14,6 +14,9 @@ const PREFIX = "arn:aws:ecs:us-east-1:172147428032:";
 const PROGRESS = new Set(["PENDING", "IN_PROGRESS"]);
 const ERROR_CODES = new Set([
   "AMBIGUOUS_SERVICE_CONFIGURATION",
+  "AMBIGUOUS_DEPLOYMENT_HISTORY",
+  "BASELINE_SUCCESSFUL_DEPLOYMENT_NOT_FOUND",
+  "DEPLOYMENT_HISTORY_INVALID",
   "ARCHITECTURE_MISMATCH",
   "AWS_API_FAILED",
   "AWS_RESPONSE_INVALID",
@@ -129,6 +132,9 @@ export async function awsCli(
         [
           service,
           operation,
+          ...(operation === "list-service-deployments"
+            ? ["--no-paginate"]
+            : []),
           "--region",
           "us-east-1",
           "--no-cli-pager",
@@ -181,12 +187,54 @@ export async function awsCli(
 
 function safeArn(arn, kind) {
   requireCondition(
-    typeof arn === "string" &&
-      arn.startsWith(`${PREFIX}${kind}/default/invoiceguard-ai/`) &&
-      /^[\w:/.+-]+$/.test(arn),
+    ["service-revision", "service-deployment"].includes(kind) &&
+      typeof arn === "string" &&
+      new RegExp(
+        `^${PREFIX}${kind}/default/invoiceguard-ai/[A-Za-z0-9_-]+$`,
+      ).test(arn) &&
+      !/\s/.test(arn),
     "INVALID_REVISION_IDENTIFIER",
   );
   return arn;
+}
+
+async function listDeployments(aws) {
+  const deployments = [];
+  const tokens = new Set();
+  let nextToken;
+  do {
+    const result = await aws("ecs", "list-service-deployments", {
+      cluster: "default",
+      service: SERVICE_ARN,
+      maxResults: 100,
+      ...(nextToken ? { nextToken } : {}),
+    });
+    requireCondition(
+      Array.isArray(result.serviceDeployments),
+      "DEPLOYMENT_HISTORY_INVALID",
+    );
+    for (const item of result.serviceDeployments) {
+      requireCondition(
+        item.serviceArn === SERVICE_ARN &&
+          item.clusterArn === `${PREFIX}cluster/default`,
+        "DEPLOYMENT_IDENTITY_MISMATCH",
+      );
+      safeArn(item.serviceDeploymentArn, "service-deployment");
+      safeArn(item.targetServiceRevisionArn, "service-revision");
+      deployments.push(item);
+    }
+    nextToken = result.nextToken;
+    if (nextToken) {
+      requireCondition(
+        typeof nextToken === "string" &&
+          !tokens.has(nextToken) &&
+          tokens.size < 100,
+        "DEPLOYMENT_HISTORY_INVALID",
+      );
+      tokens.add(nextToken);
+    }
+  } while (nextToken);
+  return deployments;
 }
 
 async function describeService(aws) {
@@ -347,23 +395,56 @@ export async function preflight(
 ) {
   log("preflight:service");
   const service = await describeService(aws);
-  log("preflight:deployment");
-  const deployment = await describeDeployment(aws, service.currentDeployment);
-  requireCondition(
-    deployment.status === "SUCCESSFUL",
-    "EXISTING_DEPLOYMENT_NOT_SUCCESSFUL",
-  );
   log("preflight:configuration");
-  const config = getConfiguration(
-    service,
-    deployment.targetServiceRevision.arn,
+  requireCondition(
+    Array.isArray(service.activeConfigurations) &&
+      service.activeConfigurations.length > 0,
+    "CURRENT_CONFIGURATION_NOT_FOUND",
   );
-  requireCondition(config, "CURRENT_CONFIGURATION_NOT_FOUND");
+  requireCondition(
+    service.activeConfigurations.length === 1,
+    "AMBIGUOUS_SERVICE_CONFIGURATION",
+  );
+  const config = service.activeConfigurations[0];
+  safeArn(config.serviceRevisionArn, "service-revision");
   log("preflight:task-definition");
   const task = await taskDefinition(aws, config.taskDefinitionArn);
   log("preflight:configuration-validation");
   verifyKnownConfiguration(config, task, expected);
-  return { service, config, task };
+  log("preflight:deployment-history");
+  const history = await listDeployments(aws);
+  const successful = history.filter(
+    (item) =>
+      item.targetServiceRevisionArn === config.serviceRevisionArn &&
+      item.status === "SUCCESSFUL",
+  );
+  requireCondition(
+    successful.length > 0,
+    "BASELINE_SUCCESSFUL_DEPLOYMENT_NOT_FOUND",
+  );
+  if (service.currentDeployment != null) {
+    safeArn(service.currentDeployment, "service-deployment");
+    requireCondition(
+      successful.some(
+        (item) => item.serviceDeploymentArn === service.currentDeployment,
+      ),
+      "EXISTING_DEPLOYMENT_NOT_SUCCESSFUL",
+    );
+  }
+  log("preflight:deployment");
+  const deployment = await describeDeployment(
+    aws,
+    successful[0].serviceDeploymentArn,
+  );
+  requireCondition(
+    deployment.targetServiceRevision.arn === config.serviceRevisionArn,
+    "DEPLOYMENT_IDENTITY_MISMATCH",
+  );
+  requireCondition(
+    deployment.status === "SUCCESSFUL",
+    "EXISTING_DEPLOYMENT_NOT_SUCCESSFUL",
+  );
+  return { service, config, task, history };
 }
 
 export async function deploy(
@@ -418,8 +499,22 @@ export async function deploy(
   let pinnedDeployment;
   let taskChecked;
   let lastStatus;
+  const baselineDeployments = new Set(
+    baseline.history.map((item) => item.serviceDeploymentArn),
+  );
+  log("deploy:deployment-history");
   while (now() < deadline) {
     const service = await describeService(aws);
+    if (service.currentDeployment != null)
+      safeArn(service.currentDeployment, "service-deployment");
+    requireCondition(
+      (service.activeConfigurations ?? []).every((item) =>
+        [baseline.config.serviceRevisionArn, revision].includes(
+          item.serviceRevisionArn,
+        ),
+      ),
+      "DEPLOYMENT_SUPERSEDED",
+    );
     const config = getConfiguration(service, revision);
     if (config) {
       requireCondition(
@@ -440,21 +535,46 @@ export async function deploy(
         taskChecked = config.taskDefinitionArn;
       }
     }
-    // currentDeployment may briefly be the previous successful deployment.
-    const current = await describeDeployment(aws, service.currentDeployment);
-    if (current.targetServiceRevision.arn !== revision) {
+    const history = await listDeployments(aws);
+    requireCondition(
+      !history.some(
+        (item) =>
+          !baselineDeployments.has(item.serviceDeploymentArn) &&
+          item.targetServiceRevisionArn !== revision,
+      ),
+      "DEPLOYMENT_SUPERSEDED",
+    );
+    const matches = history.filter(
+      (item) => item.targetServiceRevisionArn === revision,
+    );
+    requireCondition(matches.length <= 1, "AMBIGUOUS_DEPLOYMENT_HISTORY");
+    if (matches.length)
       requireCondition(
-        !pinnedDeployment &&
-          service.currentDeployment === baseline.service.currentDeployment,
-        "DEPLOYMENT_SUPERSEDED_OR_ROLLED_BACK",
+        matches[0].status === "SUCCESSFUL" || PROGRESS.has(matches[0].status),
+        "DEPLOYMENT_FAILED_OR_ROLLED_BACK",
       );
-    } else {
-      if (pinnedDeployment)
+    if (matches.length || pinnedDeployment) {
+      if (!pinnedDeployment) {
+        pinnedDeployment = matches[0].serviceDeploymentArn;
+        log("deploy:deployment");
+      } else if (matches.length)
         requireCondition(
-          current.serviceDeploymentArn === pinnedDeployment,
+          matches[0].serviceDeploymentArn === pinnedDeployment,
           "DEPLOYMENT_SUPERSEDED",
         );
-      pinnedDeployment = current.serviceDeploymentArn;
+      if (service.currentDeployment != null) {
+        safeArn(service.currentDeployment, "service-deployment");
+        requireCondition(
+          service.currentDeployment === pinnedDeployment ||
+            baselineDeployments.has(service.currentDeployment),
+          "DEPLOYMENT_SUPERSEDED",
+        );
+      }
+      const current = await describeDeployment(aws, pinnedDeployment);
+      requireCondition(
+        current.targetServiceRevision.arn === revision,
+        "DEPLOYMENT_IDENTITY_MISMATCH",
+      );
       const status = current.status;
       requireCondition(
         status === "SUCCESSFUL" || PROGRESS.has(status),

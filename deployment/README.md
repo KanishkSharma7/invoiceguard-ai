@@ -91,7 +91,12 @@ in PassRole, and no `ecs.amazonaws.com` pass-role grant is included. If the firs
 update requests passing an infrastructure role, stop and inspect the specific
 denial instead of automatically broadening permissions.
 
-No ECS creation, RunTask, Stop, generic UpdateService, List, IAM management,
+`ecs:ListServiceDeployments` is also allowed only on
+`arn:aws:ecs:us-east-1:172147428032:service/default/invoiceguard-ai` for revision
+discovery. Apply that one additional permission to the GitHub role before running
+the updated pipeline; these local changes do not apply the IAM policy.
+
+No ECS creation, RunTask, Stop, generic UpdateService, other List, IAM management,
 CloudFormation, ALB, EC2, scaling, RDS/database, Secrets Manager, or application-log
 permissions are granted. Existing task/execution/infrastructure roles retain
 their responsibilities. The GitHub role cannot fetch application secrets or
@@ -109,10 +114,16 @@ messages, allowlisted status enums, preflight stage markers, and internal error
 codes. Runner termination removes the ephemeral
 runner; forced process termination may leave an input file until runner cleanup.
 
-Preflight checks the service identity/account/cluster, ACTIVE service, SUCCESSFUL
-current deployment, expected task/execution roles, Linux/X86_64, port and health
-path, and unambiguous Main container. It reads the current task definition to
-check settings not fully represented in the Express response.
+Preflight checks the service identity/account/cluster and ACTIVE service, then
+requires exactly one active Express configuration as the production baseline.
+It verifies that configuration and its task definition: expected roles,
+Linux/X86_64, port, health path and unambiguous Main container. It searches
+paginated ListServiceDeployments history for a SUCCESSFUL record whose
+targetServiceRevisionArn matches the baseline revision, and confirms that exact
+record through DescribeServiceDeployments. A settled service's null or absent
+currentDeployment is valid; it is never passed to DescribeServiceDeployments.
+Missing successful baseline history fails closed rather than selecting an
+unrelated successful deployment.
 
 The update supplies only serviceArn and a clone of the entire current
 primaryContainer with its image replaced by the digest. Thus nested environment,
@@ -121,9 +132,12 @@ parameters are omitted, retaining networking, scaling, resources, roles and ALB
 health path.
 
 The helper records the exact serviceRevisionArn returned by the update, then pins
-the deployment whose target matches it using currentDeployment and
-DescribeServiceDeployments. Stale reads of the previous successful deployment
-never count as success. Every 15 seconds it checks the new revision's configuration
+the deployment whose targetServiceRevisionArn matches it using paginated
+ListServiceDeployments, then describes only that pinned deployment ARN.
+currentDeployment is optional and is only a secondary concurrent-update check.
+Delayed history visibility and stale reads of the previous configuration never
+count as success. New unrelated deployments, ambiguous matches, or unexpected
+active revisions fail as superseded/ambiguous updates. Every 15 seconds it checks the new revision's configuration
 and new task definition against the baseline, excluding only the changed Main
 image and AWS-generated revision metadata. Unordered environment/secret/network
 lists are normalized; command and entrypoint order is preserved.
@@ -140,9 +154,11 @@ exact revision before retrying: an update may finish after a client timeout.
 GitHub concurrency does not lock out manual service edits; detected concurrent
 edits cause a mismatch/superseded failure.
 
-Preflight emits `preflight:service`, `preflight:deployment`,
-`preflight:configuration`, `preflight:task-definition`, and
-`preflight:configuration-validation` immediately before each stage. On failure
+Preflight emits `preflight:service`, `preflight:configuration`,
+`preflight:task-definition`, `preflight:configuration-validation`,
+`preflight:deployment-history`, and `preflight:deployment` in that order.
+After update, `deploy:deployment-history` marks discovery and `deploy:deployment`
+marks pinning the matching deployment. On failure
 the final error line is only an allowlisted internal code (for example
 `ROLE_CONFIGURATION_MISMATCH` or `AWS_API_FAILED`). Errors without private
 internal provenance map to `UNEXPECTED_ERROR`; their message/code/stack is never
@@ -154,11 +170,12 @@ behavior.
 1. Confirm GitHub subject format/customization, provider, main protection, and
    deployment role's one-hour sessions. Apply rendered policies only when authorized;
    configure the three required repository variables.
-2. Confirm exact service/execution-role ARNs, SUCCESSFUL current deployment, Main
+2. Confirm exact service/execution-role ARNs, one active configuration with matching successful history, Main
    container, architecture, port, task role and health path. The helper fails closed
    if the existing service differs. No AWS state was read during preparation.
 3. Confirm the runner's AWS CLI v2 supports the three Express/deployment APIs.
-   Local model inspection used AWS CLI 2.37.7; hosted runners update independently.
+   It must also support list-service-deployments. Local model inspection used
+   AWS CLI 2.37.7; hosted runners update independently.
 4. Confirm ECR latest is mutable and no other writer changes SHA tags. If existing
    canary/bake settings need more than 30 minutes, adjust the optional timeout up to
    40 minutes; do not change scaling/bake configuration to make the job pass.

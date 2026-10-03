@@ -36,6 +36,7 @@ const env = {
 function fixture({
   statuses = ["IN_PROGRESS", "SUCCESSFUL"],
   stale = 0,
+  settled = false,
   changeConfig,
   changeTask,
   updateChange,
@@ -124,13 +125,27 @@ function fixture({
           serviceName: "invoiceguard-ai",
           cluster: "default",
           status: { statusCode: "ACTIVE" },
-          currentDeployment: deployment(current === config ? "old" : "new"),
+          currentDeployment: settled
+            ? null
+            : deployment(current === config ? "old" : "new"),
           activeConfigurations: [structuredClone(current)],
         },
       };
       if (updated && !staleRead)
         changeConfig?.(result.service.activeConfigurations[0], result.service);
       return result;
+    }
+    if (operation === "list-service-deployments") {
+      const ids = updated && poll > stale ? ["new", "old"] : ["old"];
+      return {
+        serviceDeployments: ids.map((id) => ({
+          serviceDeploymentArn: deployment(id),
+          serviceArn: SERVICE_ARN,
+          clusterArn: `${prefix}cluster/default`,
+          targetServiceRevisionArn: revision(id),
+          status: id === "old" ? "SUCCESSFUL" : statuses[0],
+        })),
+      };
     }
     if (operation === "describe-service-deployments") {
       const next = input.serviceDeploymentArns[0] === deployment("new");
@@ -343,6 +358,252 @@ describe("production deployment guardrails", () => {
   });
 });
 
+describe("Express settled services and revision-based deployment history", () => {
+  const quiet = { log: vi.fn() };
+  it("accepts null currentDeployment and verifies the single active revision's successful history", async () => {
+    const f = fixture({ settled: true });
+    const result = await preflight(settings(env), f.aws, quiet);
+    expect(result.service.currentDeployment).toBeNull();
+    expect(result.config.serviceRevisionArn).toBe(revision("old"));
+    expect(
+      f.aws.mock.calls
+        .filter((call) => call[1] === "describe-service-deployments")
+        .map((call) => call[2].serviceDeploymentArns),
+    ).toEqual([[deployment("old")]]);
+    expect(
+      f.aws.mock.calls.find(
+        (call) => call[1] === "list-service-deployments",
+      )[2],
+    ).toEqual({ cluster: "default", service: SERVICE_ARN, maxResults: 100 });
+  });
+  it.each([0, 2])(
+    "rejects %s active configurations before updating",
+    async (count) => {
+      const f = fixture({ settled: true });
+      const aws = async (...args) => {
+        const result = await f.aws(...args);
+        if (args[1] === "describe-express-gateway-service")
+          result.service.activeConfigurations = Array.from(
+            { length: count },
+            () => structuredClone(f.config),
+          );
+        return result;
+      };
+      await expect(
+        deploy(digest, settings(env), { ...f.options, aws }),
+      ).rejects.toThrow(
+        count === 0
+          ? "CURRENT_CONFIGURATION_NOT_FOUND"
+          : "AMBIGUOUS_SERVICE_CONFIGURATION",
+      );
+      expect(
+        f.aws.mock.calls.some(
+          (call) => call[1] === "update-express-gateway-service",
+        ),
+      ).toBe(false);
+    },
+  );
+  it("paginates history and describes only the successful deployment matching the baseline", async () => {
+    const f = fixture({ settled: true });
+    const aws = async (...args) => {
+      const result = await f.aws(...args);
+      if (args[1] === "list-service-deployments" && !args[2].nextToken)
+        return {
+          serviceDeployments: [
+            {
+              ...result.serviceDeployments[0],
+              serviceDeploymentArn: deployment("unrelated"),
+              targetServiceRevisionArn: revision("unrelated"),
+            },
+          ],
+          nextToken: "synthetic-next-page",
+        };
+      return result;
+    };
+    await preflight(settings(env), aws, quiet);
+    expect(
+      f.aws.mock.calls.filter((call) => call[1] === "list-service-deployments"),
+    ).toHaveLength(2);
+    expect(
+      f.aws.mock.calls
+        .filter((call) => call[1] === "describe-service-deployments")
+        .map((call) => call[2].serviceDeploymentArns),
+    ).toEqual([[deployment("old")]]);
+  });
+  it("fails closed if the active revision has no successful deployment in history", async () => {
+    const f = fixture({ settled: true });
+    const aws = async (...args) => {
+      const result = await f.aws(...args);
+      if (args[1] === "list-service-deployments")
+        result.serviceDeployments[0].targetServiceRevisionArn =
+          revision("unrelated");
+      return result;
+    };
+    await expect(preflight(settings(env), aws, quiet)).rejects.toThrow(
+      "BASELINE_SUCCESSFUL_DEPLOYMENT_NOT_FOUND",
+    );
+    expect(
+      f.aws.mock.calls.some(
+        (call) => call[1] === "describe-service-deployments",
+      ),
+    ).toBe(false);
+  });
+  it("locates the exact new revision even when currentDeployment stays null and unrelated history is first", async () => {
+    const f = fixture({ settled: true });
+    const aws = async (...args) => {
+      const result = await f.aws(...args);
+      if (args[1] === "list-service-deployments")
+        result.serviceDeployments.unshift({
+          ...result.serviceDeployments.at(-1),
+          serviceDeploymentArn: deployment("historical"),
+          targetServiceRevisionArn: revision("historical"),
+        });
+      return result;
+    };
+    const result = await deploy(digest, settings(env), { ...f.options, aws });
+    expect(result.revision).toBe(revision("new"));
+    expect(result.deployment).toBe(deployment("new"));
+    expect(
+      f.aws.mock.calls
+        .filter((call) => call[1] === "describe-service-deployments")
+        .map((call) => call[2].serviceDeploymentArns),
+    ).toEqual([[deployment("old")], [deployment("new")], [deployment("new")]]);
+  });
+  it("waits for delayed new history without monitoring the previous successful deployment", async () => {
+    const f = fixture({ settled: true });
+    let lists = 0;
+    const aws = async (...args) => {
+      const result = await f.aws(...args);
+      if (args[1] === "list-service-deployments" && ++lists <= 3)
+        result.serviceDeployments = result.serviceDeployments.filter(
+          (item) => item.targetServiceRevisionArn === revision("old"),
+        );
+      return result;
+    };
+    await deploy(digest, settings(env), { ...f.options, aws });
+    expect(
+      f.aws.mock.calls.filter(
+        (call) =>
+          call[1] === "describe-service-deployments" &&
+          call[2].serviceDeploymentArns[0] === deployment("old"),
+      ),
+    ).toHaveLength(1);
+  });
+  it.each(["ROLLBACK_SUCCESSFUL", "STOPPED", "FAILED"])(
+    "fails the exact deployment in %s with null currentDeployment",
+    async (status) => {
+      const f = fixture({ settled: true, statuses: [status] });
+      await expect(deploy(digest, settings(env), f.options)).rejects.toThrow(
+        "DEPLOYMENT_FAILED_OR_ROLLED_BACK",
+      );
+    },
+  );
+  it("detects a superseding revision from new history without describing that unrelated deployment", async () => {
+    const f = fixture({ settled: true });
+    const aws = async (...args) => {
+      const result = await f.aws(...args);
+      if (
+        args[1] === "list-service-deployments" &&
+        result.serviceDeployments.some(
+          (item) => item.targetServiceRevisionArn === revision("new"),
+        )
+      )
+        result.serviceDeployments.push({
+          ...result.serviceDeployments[0],
+          serviceDeploymentArn: deployment("superseding"),
+          targetServiceRevisionArn: revision("superseding"),
+        });
+      return result;
+    };
+    await expect(
+      deploy(digest, settings(env), { ...f.options, aws }),
+    ).rejects.toThrow("DEPLOYMENT_SUPERSEDED");
+    expect(
+      f.aws.mock.calls.some(
+        (call) =>
+          call[1] === "describe-service-deployments" &&
+          call[2].serviceDeploymentArns[0] === deployment("superseding"),
+      ),
+    ).toBe(false);
+  });
+  it("rejects multiple deployment ARNs for the newly returned revision", async () => {
+    const f = fixture({ settled: true });
+    const aws = async (...args) => {
+      const result = await f.aws(...args);
+      if (
+        args[1] === "list-service-deployments" &&
+        result.serviceDeployments.some(
+          (item) => item.targetServiceRevisionArn === revision("new"),
+        )
+      )
+        result.serviceDeployments.push({
+          ...result.serviceDeployments[0],
+          serviceDeploymentArn: deployment("duplicate"),
+        });
+      return result;
+    };
+    await expect(
+      deploy(digest, settings(env), { ...f.options, aws }),
+    ).rejects.toThrow("AMBIGUOUS_DEPLOYMENT_HISTORY");
+  });
+  it("rejects rollback reported by matching history even if describe could return stale success", async () => {
+    const f = fixture({ settled: true, statuses: ["SUCCESSFUL"] });
+    const aws = async (...args) => {
+      const result = await f.aws(...args);
+      if (args[1] === "list-service-deployments")
+        for (const item of result.serviceDeployments)
+          if (item.targetServiceRevisionArn === revision("new"))
+            item.status = "ROLLBACK_SUCCESSFUL";
+      return result;
+    };
+    await expect(
+      deploy(digest, settings(env), { ...f.options, aws }),
+    ).rejects.toThrow("DEPLOYMENT_FAILED_OR_ROLLED_BACK");
+  });
+  it("accepts the observed numeric revision ID in the documented ARN shape", async () => {
+    const f = fixture({ settled: true });
+    const observed = revision("4678200376029391309");
+    f.config.serviceRevisionArn = observed;
+    const aws = async (...args) => {
+      const result = await f.aws(...args);
+      if (args[1] === "list-service-deployments")
+        result.serviceDeployments[0].targetServiceRevisionArn = observed;
+      if (args[1] === "describe-service-deployments")
+        result.serviceDeployments[0].targetServiceRevision.arn = observed;
+      return result;
+    };
+    expect(
+      (await preflight(settings(env), aws, quiet)).config.serviceRevisionArn,
+    ).toBe(observed);
+  });
+  it.each([
+    revision("old") + "/extra",
+    revision("old") + "\n",
+    revision(""),
+    revision("old").replace("172147428032", "999999999999"),
+    revision("old").replace("/default/", "/other/"),
+    deployment("old"),
+  ])("rejects malformed or incorrectly scoped revision ARN %s", async (arn) => {
+    const f = fixture({ settled: true });
+    f.config.serviceRevisionArn = arn;
+    await expect(preflight(settings(env), f.aws, quiet)).rejects.toThrow(
+      "INVALID_REVISION_IDENTIFIER",
+    );
+  });
+  it("fails safely on a repeated history pagination token", async () => {
+    const f = fixture({ settled: true });
+    const aws = async (...args) => {
+      const result = await f.aws(...args);
+      if (args[1] === "list-service-deployments")
+        result.nextToken = "repeated-token";
+      return result;
+    };
+    await expect(preflight(settings(env), aws, quiet)).rejects.toThrow(
+      "DEPLOYMENT_HISTORY_INVALID",
+    );
+  });
+});
+
 describe("private CLI request transport", () => {
   it.each([0, 1])(
     "removes private input files on exit %s and suppresses raw errors",
@@ -394,10 +655,11 @@ describe("private CLI request transport", () => {
 describe("sanitized preflight diagnostics", () => {
   const stages = [
     "service",
-    "deployment",
     "configuration",
     "task-definition",
     "configuration-validation",
+    "deployment-history",
+    "deployment",
   ];
   it.each([
     [
@@ -410,7 +672,7 @@ describe("sanitized preflight diagnostics", () => {
     ],
     [
       "EXISTING_DEPLOYMENT_NOT_SUCCESSFUL",
-      1,
+      5,
       "describe-service-deployments",
       (r) => {
         r.serviceDeployments[0].status = "STOPPED";
@@ -418,7 +680,7 @@ describe("sanitized preflight diagnostics", () => {
     ],
     [
       "CURRENT_CONFIGURATION_NOT_FOUND",
-      2,
+      1,
       "describe-express-gateway-service",
       (r) => {
         r.service.activeConfigurations = [];
@@ -426,7 +688,7 @@ describe("sanitized preflight diagnostics", () => {
     ],
     [
       "TASK_DEFINITION_UNAVAILABLE",
-      3,
+      2,
       "describe-task-definition",
       (r) => {
         r.taskDefinition.status = "INACTIVE";
@@ -434,7 +696,7 @@ describe("sanitized preflight diagnostics", () => {
     ],
     [
       "ROLE_CONFIGURATION_MISMATCH",
-      4,
+      3,
       "describe-task-definition",
       (r) => {
         r.taskDefinition.taskRoleArn = "sensitive-incorrect-role";
@@ -442,7 +704,7 @@ describe("sanitized preflight diagnostics", () => {
     ],
     [
       "PORT_OR_HEALTH_CONFIGURATION_MISMATCH",
-      4,
+      3,
       "describe-express-gateway-service",
       (r) => {
         r.service.activeConfigurations[0].healthCheckPath = "/wrong";
@@ -450,7 +712,7 @@ describe("sanitized preflight diagnostics", () => {
     ],
     [
       "ARCHITECTURE_MISMATCH",
-      4,
+      3,
       "describe-task-definition",
       (r) => {
         r.taskDefinition.runtimePlatform.cpuArchitecture = "ARM64";
@@ -458,7 +720,7 @@ describe("sanitized preflight diagnostics", () => {
     ],
     [
       "PRIMARY_CONTAINER_MISMATCH",
-      4,
+      3,
       "describe-task-definition",
       (r) => {
         r.taskDefinition.containerDefinitions[0].image =
@@ -611,6 +873,10 @@ describe("workflow and IAM scope", () => {
     );
     expect(actions).toContain("ecs:RegisterTaskDefinition");
     expect(actions).toContain("ecs:UpdateExpressGatewayService");
+    const list = policy.Statement.find((statement) =>
+      [statement.Action].flat().includes("ecs:ListServiceDeployments"),
+    );
+    expect(list.Resource).toBe(SERVICE_ARN);
     expect(actions).not.toContain("ecs:CreateExpressGatewayService");
     expect(actions).not.toContain("ecs:RunTask");
     const pass = policy.Statement.find(
