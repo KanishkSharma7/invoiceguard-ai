@@ -1,0 +1,125 @@
+name: Deploy production
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: invoiceguard-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.repository == 'KanishkSharma7/invoiceguard-ai'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: invoiceguard_ci
+          POSTGRES_PASSWORD: isolated_ci_password
+          POSTGRES_DB: invoiceguard_ci
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U invoiceguard_ci -d invoiceguard_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - name: Configure isolated CI database
+        run: |
+          umask 077
+          cat > .env <<'EOF'
+          NODE_ENV=test
+          DB_AUTH_MODE=url
+          DATABASE_URL=postgresql://invoiceguard_ci:isolated_ci_password@localhost:5433/invoiceguard_ci
+          APP_ORIGIN=http://localhost:5173
+          EOF
+      - run: npm run db:generate
+      - name: Migrate isolated CI database
+        run: npm run db:migrate
+        env:
+          NODE_ENV: test
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Remove CI environment file
+        if: always()
+        run: rm -f .env
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: us-east-1
+      AWS_PAGER: ""
+      AWS_CLI_AUTO_PROMPT: "off"
+      ECR_REGISTRY: 172147428032.dkr.ecr.us-east-1.amazonaws.com
+      ECR_REPOSITORY: invoiceguard-ai
+      ECS_TASK_ROLE_ARN: ${{ vars.ECS_TASK_ROLE_ARN }}
+      ECS_EXECUTION_ROLE_ARN: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
+      DEPLOY_TIMEOUT_SECONDS: ${{ vars.DEPLOY_TIMEOUT_SECONDS || '1800' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - name: Validate deployment settings without AWS access
+        run: node deployment/deploy.mjs validate
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c # v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          role-session-name: invoiceguard-${{ github.run_id }}
+          aws-region: us-east-1
+          audience: sts.amazonaws.com
+          allowed-account-ids: "172147428032"
+          role-duration-seconds: 3600
+          mask-aws-account-id: true
+          output-credentials: false
+      - name: Check existing service configuration
+        run: node deployment/deploy.mjs preflight
+      - name: Reuse existing immutable SHA image when present
+        id: image
+        run: node deployment/deploy.mjs image
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        if: steps.image.outputs.exists != 'true'
+      - name: Authenticate Docker to existing ECR repository
+        if: steps.image.outputs.exists != 'true'
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" |
+            docker login --username AWS --password-stdin "$ECR_REGISTRY"
+      - name: Build and push runtime only
+        id: build
+        if: steps.image.outputs.exists != 'true'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          tags: |
+            172147428032.dkr.ecr.us-east-1.amazonaws.com/invoiceguard-ai:${{ github.sha }}
+            172147428032.dkr.ecr.us-east-1.amazonaws.com/invoiceguard-ai:latest
+      - name: Deploy digest and wait for the exact revision
+        run: node deployment/deploy.mjs deploy
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest || steps.build.outputs.digest }}

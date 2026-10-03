@@ -1,0 +1,59 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EcrLogin",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "PublishOnlyInvoiceGuardImages",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:PutImage",
+        "ecr:BatchGetImage"
+      ],
+      "Resource": "arn:aws:ecr:us-east-1:172147428032:repository/invoiceguard-ai"
+    },
+    {
+      "Sid": "UpdateOnlyExistingExpressService",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:DescribeExpressGatewayService",
+        "ecs:UpdateExpressGatewayService",
+        "ecs:DescribeServiceDeployments"
+      ],
+      "Resource": "arn:aws:ecs:us-east-1:172147428032:service/default/invoiceguard-ai"
+    },
+    {
+      "Sid": "ReadOnlyInvoiceGuardDeployments",
+      "Effect": "Allow",
+      "Action": "ecs:DescribeServiceDeployments",
+      "Resource": "arn:aws:ecs:us-east-1:172147428032:service-deployment/default/invoiceguard-ai/*"
+    },
+    {
+      "Sid": "TaskDefinitionUpdateDependencyAndConfigurationCheck",
+      "Effect": "Allow",
+      "Action": ["ecs:RegisterTaskDefinition", "ecs:DescribeTaskDefinition"],
+      "Resource": "*",
+      "Condition": { "StringEquals": { "aws:RequestedRegion": "us-east-1" } }
+    },
+    {
+      "Sid": "PassOnlyExistingApplicationRoles",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::172147428032:role/InvoiceGuardTaskRole",
+        "arn:aws:iam::172147428032:role/ecsTaskExecutionRole"
+      ],
+      "Condition": {
+        "StringEquals": { "iam:PassedToService": "ecs-tasks.amazonaws.com" }
+      }
+    }
+  ]
+}

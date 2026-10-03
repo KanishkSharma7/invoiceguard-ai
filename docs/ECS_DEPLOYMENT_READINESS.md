@@ -1,5 +1,9 @@
 # ECS Express Mode deployment readiness
 
+For production GitHub Actions/OIDC releases to the existing service, see the
+[CI/CD runbook](../deployment/README.md). That workflow performs no production
+migrations or seeding and preserves the existing production configuration.
+
 The user has created Aurora PostgreSQL Serverless cluster `invoiceguard-db` in
 `us-east-1` through RDS Express Configuration, with IAM-only authentication and
 the internet access gateway enabled on port 5432. This preparation made no AWS
