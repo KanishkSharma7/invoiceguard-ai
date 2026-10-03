@@ -90,7 +90,6 @@ jobs:
           role-session-name: invoiceguard-${{ github.run_id }}
           aws-region: us-east-1
           audience: sts.amazonaws.com
-          allowed-account-ids: "172147428032"
           role-duration-seconds: 3600
           mask-aws-account-id: true
           output-credentials: false
