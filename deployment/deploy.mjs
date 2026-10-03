@@ -363,8 +363,77 @@ export function configurationSnapshot(config) {
     "ingressPaths",
   ])
     delete copy[key];
-  delete copy.primaryContainer.image;
+  if (copy.primaryContainer) delete copy.primaryContainer.image;
   return normalize(copy);
+}
+
+// Paths are emitted from a fixed schema, never from AWS-provided keys or names.
+// Unknown fields still fail comparison, but their names cannot enter the logs.
+const configurationPathSchema = {
+  cpu: null,
+  cpuArchitecture: null,
+  memory: null,
+  taskRoleArn: null,
+  executionRoleArn: null,
+  healthCheckPath: null,
+  networkConfiguration: { subnets: [null], securityGroups: [null] },
+  scalingTarget: {
+    minTaskCount: null,
+    maxTaskCount: null,
+    autoScalingMetric: null,
+    autoScalingTargetValue: null,
+  },
+  primaryContainer: {
+    image: null,
+    containerPort: null,
+    command: [null],
+    environment: [{ name: null, value: null }],
+    secrets: [{ name: null, valueFrom: null }],
+    repositoryCredentials: { credentialsParameter: null },
+    awsLogsConfiguration: { logGroup: null, logStreamPrefix: null },
+  },
+};
+
+export function configurationDiffPaths(expected, actual) {
+  const paths = new Set();
+  function walk(left, right, schema, path) {
+    if (isDeepStrictEqual(left, right)) return;
+    if (Array.isArray(left) && Array.isArray(right) && Array.isArray(schema)) {
+      if (left.length !== right.length) paths.add(path);
+      for (let index = 0; index < Math.min(left.length, right.length); index++)
+        walk(left[index], right[index], schema[0], `${path}[${index}]`);
+    } else if (
+      left &&
+      right &&
+      typeof left === "object" &&
+      typeof right === "object" &&
+      !Array.isArray(left) &&
+      !Array.isArray(right) &&
+      schema &&
+      !Array.isArray(schema)
+    ) {
+      for (const key of new Set([
+        ...Object.keys(left),
+        ...Object.keys(right),
+      ])) {
+        if (!Object.hasOwn(schema, key)) {
+          if (
+            !Object.hasOwn(left, key) ||
+            !Object.hasOwn(right, key) ||
+            !isDeepStrictEqual(left[key], right[key])
+          )
+            paths.add(path ? `${path}.[unknown-field]` : "[unknown-field]");
+          continue;
+        }
+        const next = path ? `${path}.${key}` : key;
+        if (!Object.hasOwn(left, key) || !Object.hasOwn(right, key))
+          paths.add(next);
+        else walk(left[key], right[key], schema[key], next);
+      }
+    } else paths.add(path || "[configuration]");
+  }
+  walk(expected, actual, configurationPathSchema, "");
+  return [...paths].sort();
 }
 
 export function taskSnapshot(task) {
@@ -487,12 +556,22 @@ export async function deploy(
     revision !== baseline.config.serviceRevisionArn,
     "NO_NEW_REVISION",
   );
+  const target = response.service.targetConfiguration;
+  const expectedSnapshot = configurationSnapshot(baseline.config);
+  const actualSnapshot = configurationSnapshot(target);
+  const imageMatches = target.primaryContainer?.image === image;
+  const configurationMatches = isDeepStrictEqual(
+    expectedSnapshot,
+    actualSnapshot,
+  );
+  if (!imageMatches || !configurationMatches) {
+    const paths = configurationDiffPaths(expectedSnapshot, actualSnapshot);
+    if (!imageMatches) paths.push("primaryContainer.image");
+    for (const path of [...new Set(paths)].sort())
+      log(`configuration-diff: ${path}`);
+  }
   requireCondition(
-    response.service.targetConfiguration.primaryContainer?.image === image &&
-      isDeepStrictEqual(
-        configurationSnapshot(baseline.config),
-        configurationSnapshot(response.service.targetConfiguration),
-      ),
+    imageMatches && configurationMatches,
     "UPDATE_CONFIGURATION_MISMATCH",
   );
   log("Express update accepted; waiting for the exact new revision.");

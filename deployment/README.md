@@ -205,3 +205,20 @@ Sources: [Express update API](https://docs.aws.amazon.com/AmazonECS/latest/APIRe
 [deployment statuses](https://docs.aws.amazon.com/AmazonECS/latest/APIReference/API_ServiceDeployment.html),
 [GitHub OIDC](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws),
 [repository metadata](https://api.github.com/repos/KanishkSharma7/invoiceguard-ai).
+
+### Update configuration mismatch diagnostics
+
+An image-only update that fails configuration comparison emits only differing
+schema paths, for example `configuration-diff: primaryContainer.environment[0].value`,
+followed by `UPDATE_CONFIGURATION_MISMATCH`. Array indices refer to the canonical
+snapshot (environment/secrets sorted by name). No field values, environment names,
+images, role ARNs, secret references, or AWS responses are printed. Unknown field
+names are replaced with `[unknown-field]` so response keys cannot leak data.
+
+The comparison already excludes generated `serviceRevisionArn`,
+`taskDefinitionArn`, `createdAt`, and `ingressPaths`; the requested image is checked
+separately. Unordered lists are canonicalized. Missing versus present functional
+fields remain a mismatch, even if a value appears to be a default. Do not add an
+exception without evidence that the specific field is server-managed and does
+not change functional or security configuration. The live mismatch's field is
+not known until its sanitized path diagnostic is available.

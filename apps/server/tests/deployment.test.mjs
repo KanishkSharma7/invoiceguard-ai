@@ -13,6 +13,8 @@ import {
   preflight,
   sanitizedErrorCode,
   reportFailure,
+  configurationSnapshot,
+  configurationDiffPaths,
 } from "../../../deployment/deploy.mjs";
 
 const prefix = "arn:aws:ecs:us-east-1:172147428032:";
@@ -887,5 +889,162 @@ describe("workflow and IAM scope", () => {
     expect(pass.Condition.StringEquals["iam:PassedToService"]).toBe(
       "ecs-tasks.amazonaws.com",
     );
+  });
+});
+
+describe("safe Express update structural diagnostics", () => {
+  it("accepts documented revision metadata changes and unordered lists", async () => {
+    const f = fixture({
+      updateChange: ({ service }) => {
+        const c = service.targetConfiguration;
+        c.createdAt = 1780000000;
+        c.ingressPaths = [
+          { accessType: "PUBLIC", endpoint: "private-endpoint" },
+        ];
+        c.primaryContainer.environment.reverse();
+      },
+    });
+    await deploy(digest, settings(env), f.options);
+    expect(
+      f.logs.filter((line) => line.startsWith("configuration-diff:")),
+    ).toEqual([]);
+  });
+  it.each([
+    [
+      "cpu",
+      (c) => {
+        c.cpu = "1024";
+      },
+    ],
+    [
+      "memory",
+      (c) => {
+        delete c.memory;
+      },
+    ],
+    [
+      "cpuArchitecture",
+      (c) => {
+        delete c.cpuArchitecture;
+      },
+    ],
+    [
+      "taskRoleArn",
+      (c) => {
+        c.taskRoleArn = "private-role";
+      },
+    ],
+    [
+      "executionRoleArn",
+      (c) => {
+        c.executionRoleArn = "private-role";
+      },
+    ],
+    [
+      "healthCheckPath",
+      (c) => {
+        c.healthCheckPath = "/private";
+      },
+    ],
+    [
+      "networkConfiguration.subnets[0]",
+      (c) => {
+        c.networkConfiguration.subnets[0] = "private-subnet";
+      },
+    ],
+    [
+      "scalingTarget.maxTaskCount",
+      (c) => {
+        c.scalingTarget.maxTaskCount = 9;
+      },
+    ],
+    [
+      "primaryContainer.containerPort",
+      (c) => {
+        c.primaryContainer.containerPort = 80;
+      },
+    ],
+    [
+      "primaryContainer.environment[0].value",
+      (c) => {
+        c.primaryContainer.environment[0].value = "private-value";
+      },
+    ],
+    [
+      "primaryContainer.secrets[0].valueFrom",
+      (c) => {
+        c.primaryContainer.secrets[0].valueFrom = "private-secret";
+      },
+    ],
+    [
+      "primaryContainer.image",
+      (c) => {
+        c.primaryContainer.image = "private-image";
+      },
+    ],
+    [
+      "primaryContainer.command[0]",
+      (c) => {
+        c.primaryContainer.command.reverse();
+      },
+    ],
+    [
+      "primaryContainer.repositoryCredentials",
+      (c) => {
+        c.primaryContainer.repositoryCredentials = {
+          credentialsParameter: "private-arn",
+        };
+      },
+    ],
+  ])("reports only paths and still rejects %s", async (path, mutate) => {
+    const f = fixture({
+      updateChange: ({ service }) => mutate(service.targetConfiguration),
+    });
+    await expect(deploy(digest, settings(env), f.options)).rejects.toThrow(
+      "UPDATE_CONFIGURATION_MISMATCH",
+    );
+    const diffs = f.logs.filter((line) =>
+      line.startsWith("configuration-diff:"),
+    );
+    expect(diffs).toContain(`configuration-diff: ${path}`);
+    expect(f.logs.join("\n")).not.toMatch(
+      /private-|sensitive-|arn:aws:|sha256:/,
+    );
+  });
+  it("never prints untrusted field names or environment names", () => {
+    const left = {
+      primaryContainer: {
+        environment: [{ name: "secret-name", value: "secret-value" }],
+      },
+    };
+    const right = structuredClone(left);
+    right.primaryContainer.environment[0].name = "other-secret-name";
+    right.primaryContainer["raw-secret-key\nAWS response"] = "raw-secret-value";
+    right["arn:aws:private"] = "private";
+    expect(configurationDiffPaths(left, right)).toEqual([
+      "[unknown-field]",
+      "primaryContainer.[unknown-field]",
+      "primaryContainer.environment[0].name",
+    ]);
+  });
+  it("canonicalizes only unordered lists and retains their values", () => {
+    const f = fixture();
+    const other = structuredClone(f.config);
+    other.networkConfiguration.subnets = ["b", "a"];
+    f.config.networkConfiguration.subnets = ["a", "b"];
+    other.primaryContainer.environment.reverse();
+    expect(
+      configurationDiffPaths(
+        configurationSnapshot(f.config),
+        configurationSnapshot(other),
+      ),
+    ).toEqual([]);
+    other.networkConfiguration.subnets[0] = "changed";
+    expect(
+      configurationDiffPaths(
+        configurationSnapshot(f.config),
+        configurationSnapshot(other),
+      ),
+    ).toEqual(["networkConfiguration.subnets[1]"]);
   });
 });
